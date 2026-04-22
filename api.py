@@ -81,9 +81,8 @@ def _startup_load_excel() -> None:
         wb = load_workbook(TRESORERIE_XLSM, read_only=True, keep_vba=True)
         ws = wb["Achats Cons"]
 
-        # Mapping fournisseur affiché → clé interne
-        DISPLAY_TO_KEY = {v.lower(): k for k, v in FOURNISSEUR_DISPLAY.items()}
-        # ex: "sysco" → "SYSCO", "ambelys" → "AMBELYS", "terreazur" → "TERREAZUR"
+        # Mapping fournisseur affiché → clé interne (dynamique depuis _fournisseurs)
+        DISPLAY_TO_KEY = _get_display_to_key()
 
         for row in ws.iter_rows(min_row=2, values_only=True):
             fournisseur_raw = row[2]   # col C
@@ -154,12 +153,16 @@ def _startup_load_excel() -> None:
                 _store["factures"][num_facture]["bons_livraisons"].append(num_bl)
 
             # Créer l'entrée BL si présent
+            # La date col F et les montants HT sont portés par le BL (pas la facture)
             if num_bl and num_bl not in _store["bons"]:
                 _store["bons"][num_bl] = {
                     "type_document":           "bon_livraison",
                     "numero_bon_livraison":    num_bl,
                     "nom_fournisseur":         fournisseur_key,
-                    "date_livraison":          _to_date(date_emission),
+                    "date_livraison":          _to_date(date_emission),  # col F = date du BL
+                    "prix_HT_5_5pct":          _to_float(ht_55),
+                    "prix_HT_10pct":           _to_float(ht_10),
+                    "prix_HT_20pct":           _to_float(ht_20),
                     "montant_total":           None,
                     "numero_facture_rattachee": num_facture,
                     "fichier_source":          commentaire or "",
@@ -225,6 +228,39 @@ def _upsert_bon(data: dict) -> tuple[dict, str]:
 
 
 # ---------------------------------------------------------------------------
+# Store fournisseurs — initialisé avec les 3 fournisseurs historiques
+# Clé = identifiant interne (ex: "SYSCO"), valeur = dict avec nom_affiche + patterns
+# ---------------------------------------------------------------------------
+_fournisseurs: dict[str, dict] = {
+    "SYSCO": {
+        "id":           "SYSCO",
+        "nom_affiche":  "Sysco",
+        "patterns":     ["sysco"],
+    },
+    "AMBELYS": {
+        "id":           "AMBELYS",
+        "nom_affiche":  "Ambelys",
+        "patterns":     ["ambelys"],
+    },
+    "TERREAZUR": {
+        "id":           "TERREAZUR",
+        "nom_affiche":  "TerreAzur",
+        "patterns":     ["terreazur", "terre azur"],
+    },
+}
+
+
+def _get_fournisseur_display() -> dict[str, str]:
+    """Retourne {id → nom_affiche} pour tous les fournisseurs."""
+    return {k: v["nom_affiche"] for k, v in _fournisseurs.items()}
+
+
+def _get_display_to_key() -> dict[str, str]:
+    """Retourne {nom_affiche.lower() → id} pour la lecture du xlsm."""
+    return {v["nom_affiche"].lower(): k for k, v in _fournisseurs.items()}
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -233,19 +269,23 @@ def health():
     return {"status": "ok"}
 
 
-def _process_one_pdf(tmp_path: str, filename: str) -> dict:
+def _process_one_pdf(tmp_path: str, filename: str, fournisseur_ids: list[str]) -> dict:
     """
     Traitement complet d'un PDF (bloquant — exécuté dans le thread pool).
     Retourne un dict avec les clés : data, doc_type, error.
+    fournisseur_ids : liste des identifiants internes connus (ex: ["SYSCO", "AMBELYS", ...])
     """
     try:
         text     = load_pdf_text(tmp_path)
         doc_type = classify_document(text, filename)
-        prompt   = build_prompt(doc_type, text)
+        prompt   = build_prompt(doc_type, text, fournisseur_ids=fournisseur_ids)
 
         result = llm.invoke(prompt)
         data   = result.model_dump() if hasattr(result, "model_dump") else dict(result)
-        data   = finalize_document_data(data, text=text, filename=filename, predicted_type=doc_type)
+        data   = finalize_document_data(
+            data, text=text, filename=filename, predicted_type=doc_type,
+            fournisseur_patterns={k: v["patterns"] for k, v in _fournisseurs.items()},
+        )
         data   = _serialize_record(data)
         return {"data": data, "doc_type": doc_type, "error": None}
     except Exception as e:
@@ -302,8 +342,9 @@ async def upload_documents(files: list[UploadFile] = File(...)):
             saved.append((tmp_path, storage_path, fname))
 
         # 2. Traitement LLM en parallèle dans le thread pool
+        fournisseur_ids = list(_fournisseurs.keys())
         futures = [
-            loop.run_in_executor(_executor, _process_one_pdf, tmp_path, fname)
+            loop.run_in_executor(_executor, _process_one_pdf, tmp_path, fname, fournisseur_ids)
             for tmp_path, _, fname in saved
         ]
         outcomes = await asyncio.gather(*futures)
@@ -398,10 +439,13 @@ class PatchFacture(BaseModel):
     nom_fournisseur:      str | None = None
 
 class PatchBon(BaseModel):
-    date_livraison:  str | None = None
-    montant_total:   float | None = None
+    date_livraison:       str | None = None
+    montant_total:        float | None = None
+    prix_HT_5_5pct:       float | None = None
+    prix_HT_10pct:        float | None = None
+    prix_HT_20pct:        float | None = None
     numero_bon_livraison: str | None = None
-    nom_fournisseur: str | None = None
+    nom_fournisseur:      str | None = None
 
 
 @app.patch("/api/factures/{numero_facture}", summary="Modifier les champs d'une facture")
@@ -573,18 +617,112 @@ def supprimer_rattachement(numero_facture: str, numero_bl: str):
     return {"message": f"Rattachement {numero_bl} ↔ {numero_facture} supprimé."}
 
 
+# ---------------------------------------------------------------------------
+# Endpoints fournisseurs
+# ---------------------------------------------------------------------------
+
+class FournisseurCreate(BaseModel):
+    id:          str   # identifiant interne unique, ex: "METRO"
+    nom_affiche: str   # nom affiché dans le xlsm, ex: "Metro"
+    patterns:    list[str] = []  # mots-clés pour la détection auto dans les PDFs
+
+class FournisseurUpdate(BaseModel):
+    nom_affiche: str | None = None
+    patterns:    list[str] | None = None
+
+
+@app.get("/api/fournisseurs", summary="Lister les fournisseurs")
+def get_fournisseurs():
+    return list(_fournisseurs.values())
+
+
+@app.post("/api/fournisseurs", summary="Ajouter un fournisseur", status_code=201)
+def create_fournisseur(body: FournisseurCreate):
+    key = body.id.upper().strip().replace(" ", "")
+    if key in _fournisseurs:
+        raise HTTPException(status_code=409, detail=f"Le fournisseur '{key}' existe déjà.")
+    if not body.nom_affiche.strip():
+        raise HTTPException(status_code=422, detail="nom_affiche ne peut pas être vide.")
+    _fournisseurs[key] = {
+        "id":          key,
+        "nom_affiche": body.nom_affiche.strip(),
+        "patterns":    [p.lower().strip() for p in body.patterns if p.strip()],
+    }
+    return _fournisseurs[key]
+
+
+@app.patch("/api/fournisseurs/{fournisseur_id}", summary="Modifier un fournisseur")
+def update_fournisseur(fournisseur_id: str, body: FournisseurUpdate):
+    key = fournisseur_id.upper().strip()
+    if key not in _fournisseurs:
+        raise HTTPException(status_code=404, detail=f"Fournisseur '{key}' introuvable.")
+    if body.nom_affiche is not None:
+        if not body.nom_affiche.strip():
+            raise HTTPException(status_code=422, detail="nom_affiche ne peut pas être vide.")
+        _fournisseurs[key]["nom_affiche"] = body.nom_affiche.strip()
+    if body.patterns is not None:
+        _fournisseurs[key]["patterns"] = [p.lower().strip() for p in body.patterns if p.strip()]
+    return _fournisseurs[key]
+
+
+@app.delete("/api/fournisseurs/{fournisseur_id}", summary="Supprimer un fournisseur")
+def delete_fournisseur(fournisseur_id: str):
+    key = fournisseur_id.upper().strip()
+    if key not in _fournisseurs:
+        raise HTTPException(status_code=404, detail=f"Fournisseur '{key}' introuvable.")
+    # Vérifier qu'aucune facture ne référence ce fournisseur
+    en_cours = [
+        f["numero_facture"] for f in _store["factures"].values()
+        if f.get("nom_fournisseur") == key
+    ]
+    if en_cours:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Impossible de supprimer '{key}' : {len(en_cours)} facture(s) lui sont rattachées.",
+        )
+    del _fournisseurs[key]
+    return {"message": f"Fournisseur '{key}' supprimé."}
+
+
 @app.get("/api/stats", summary="Statistiques globales")
 def get_stats():
     factures = list(_store["factures"].values())
     bons = list(_store["bons"].values())
-    
-    montant_total = sum(
-        f.get("TOT HT") or 0
-        for f in factures
-        if f.get("TOT HT") is not None
-    )
+
+    # Montant total = somme des HT de toutes les factures
+    # (on additionne les 3 taux HT disponibles sur chaque facture)
+    montant_total = 0.0
+    for f in factures:
+        for field in ("prix_HT_5_5pct", "prix_HT_10pct", "prix_HT_20pct"):
+            v = f.get(field)
+            if v is not None:
+                try:
+                    montant_total += float(v)
+                except (TypeError, ValueError):
+                    pass
+    # Ajouter aussi les montants portés par les BL (cas multi-BL où la facture
+    # n'a pas de montant propre mais chaque BL en a un)
+    factures_avec_ht = {
+        num for num, f in _store["factures"].items()
+        if any(f.get(k) for k in ("prix_HT_5_5pct", "prix_HT_10pct", "prix_HT_20pct"))
+    }
+    for b in bons:
+        fac = b.get("numero_facture_rattachee")
+        if fac and fac not in factures_avec_ht:
+            for field in ("prix_HT_5_5pct", "prix_HT_10pct", "prix_HT_20pct"):
+                v = b.get(field)
+                if v is not None:
+                    try:
+                        montant_total += float(v)
+                    except (TypeError, ValueError):
+                        pass
+
+    # BL non rattachés = BL dont la facture n'existe pas dans le store
+    # (uploadés sans rattachement automatique réussi)
     bl_non_rattaches = sum(
-        1 for b in bons if not b.get("numero_facture_rattachee")
+        1 for b in bons
+        if not b.get("numero_facture_rattachee")
+        or b.get("numero_facture_rattachee") not in _store["factures"]
     )
 
     return {
@@ -674,6 +812,7 @@ def _regenerate_excel():
             bons=bons,
             template_path=TRESORERIE_XLSM,
             output_path=TRESORERIE_XLSM,
+            fournisseur_display=_get_fournisseur_display(),
         )
     except Exception as e:
         print(f"[WARN] _regenerate_excel : erreur lors de l'ecriture dans le xlsm : {e}")

@@ -6,7 +6,7 @@ const API_BASE = "/backend";
 
 export interface Facture {
   numero_facture: string | null;
-  nom_fournisseur: "SYSCO" | "AMBELYS" | "TERREAZUR" | null;
+  nom_fournisseur: string | null;
   date_emission: string | null;
   date_paiement_prevue: string | null;
   montant_total: number | null;
@@ -20,9 +20,12 @@ export interface Facture {
 
 export interface BonLivraison {
   numero_bon_livraison: string | null;
-  nom_fournisseur: "SYSCO" | "AMBELYS" | "TERREAZUR" | null;
+  nom_fournisseur: string | null;
   date_livraison: string | null;
   montant_total: number | null;
+  prix_HT_5_5pct: number | null;
+  prix_HT_10pct: number | null;
+  prix_HT_20pct: number | null;
   numero_facture_rattachee: string | null;
   fichier_source: string;
   fichier_stocke: string | null;
@@ -96,6 +99,49 @@ export function getTresorerieDownloadUrl(): string {
 
 export async function resetStore(): Promise<void> {
   await apiFetch("/api/reset", { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Fournisseurs
+// ---------------------------------------------------------------------------
+
+export interface Fournisseur {
+  id: string;
+  nom_affiche: string;
+  patterns: string[];
+}
+
+export async function fetchFournisseurs(): Promise<Fournisseur[]> {
+  return apiFetch<Fournisseur[]>("/api/fournisseurs");
+}
+
+export async function createFournisseur(body: {
+  id: string;
+  nom_affiche: string;
+  patterns: string[];
+}): Promise<Fournisseur> {
+  return apiFetch<Fournisseur>("/api/fournisseurs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateFournisseur(
+  id: string,
+  body: { nom_affiche?: string; patterns?: string[] }
+): Promise<Fournisseur> {
+  return apiFetch<Fournisseur>(`/api/fournisseurs/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteFournisseur(id: string): Promise<void> {
+  await apiFetch(`/api/fournisseurs/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }
 
 export interface ExportTresorerieResult {

@@ -1,10 +1,28 @@
 "use client";
 
 import { useTheme } from "./ThemeProvider";
-import { SunIcon, MoonIcon } from "./Icons";
+import { SunIcon, MoonIcon, BuildingIcon } from "./Icons";
+import { usePathname } from "next/navigation";
 
 export default function Navbar() {
   const { theme, toggleTheme } = useTheme();
+  const pathname = usePathname();
+
+  const navLink = (href: string, label: string) => {
+    const active = pathname === href || (href !== "/" && pathname.startsWith(href));
+    return (
+      <a
+        href={href}
+        className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+          active
+            ? "text-neutral-900 dark:text-white bg-neutral-100 dark:bg-neutral-800"
+            : "text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        }`}
+      >
+        {label}
+      </a>
+    );
+  };
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-neutral-200 dark:border-neutral-800 bg-white/90 dark:bg-neutral-950/90 backdrop-blur-sm">
@@ -38,23 +56,19 @@ export default function Navbar() {
 
         {/* Nav links */}
         <nav className="hidden md:flex items-center gap-1">
+          {navLink("/", "Dashboard")}
+          {navLink("/factures", "Factures")}
+          {navLink("/bons-livraison", "Bons de livraison")}
           <a
-            href="/"
-            className="px-3 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-md transition-colors"
+            href="/fournisseurs"
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+              pathname.startsWith("/fournisseurs")
+                ? "text-neutral-900 dark:text-white bg-neutral-100 dark:bg-neutral-800"
+                : "text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            }`}
           >
-            Dashboard
-          </a>
-          <a
-            href="/factures"
-            className="px-3 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-md transition-colors"
-          >
-            Factures
-          </a>
-          <a
-            href="/bons-livraison"
-            className="px-3 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-md transition-colors"
-          >
-            Bons de livraison
+            <BuildingIcon className="w-3.5 h-3.5" />
+            Fournisseurs
           </a>
         </nav>
 

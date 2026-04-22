@@ -21,7 +21,7 @@ class DocumentInfo(BaseModel):
     date_livraison: date | None = None
     date_paiement_prevue: date | None = None
     montant_total: float | None = None
-    nom_fournisseur: Literal["SYSCO", "AMBELYS", "TERREAZUR"] | None = None
+    nom_fournisseur: str | None = None
     bons_livraisons: list[str] = Field(default_factory=list)
     prix_HT_5_5pct: float | None = None
     prix_HT_10pct: float | None = None
@@ -126,15 +126,37 @@ def normalize_bl_list(values: list[str]) -> list[str]:
             cleaned.append(c)
     return cleaned
 
-def normalize_supplier_name(value: str | None) -> str | None:
+def normalize_supplier_name(
+    value: str | None,
+    fournisseur_patterns: dict[str, list[str]] | None = None,
+) -> str | None:
+    """
+    Normalise un nom de fournisseur brut vers son identifiant interne.
+    Si fournisseur_patterns est fourni (dict {id: [patterns]}), l'utilise.
+    Sinon, repli sur les 3 fournisseurs historiques codés en dur.
+    """
     if not value:
         return None
-    raw = re.sub(r"\s+", " ", value.upper().strip())
-    if "AMBELYS" in raw:
+    raw = re.sub(r"\s+", " ", value.strip().lower())
+
+    if fournisseur_patterns:
+        for fournisseur_id, patterns in fournisseur_patterns.items():
+            for pattern in patterns:
+                if pattern.lower() in raw:
+                    return fournisseur_id
+        # Tentative directe sur l'identifiant lui-même
+        raw_upper = raw.upper().replace(" ", "")
+        if raw_upper in fournisseur_patterns:
+            return raw_upper
+        return None
+
+    # Repli historique
+    raw_upper = re.sub(r"\s+", " ", value.upper().strip())
+    if "AMBELYS" in raw_upper:
         return "AMBELYS"
-    if "SYSCO" in raw:
+    if "SYSCO" in raw_upper:
         return "SYSCO"
-    if "TERREAZUR" in raw or "TERRE AZUR" in raw:
+    if "TERREAZUR" in raw_upper or "TERRE AZUR" in raw_upper:
         return "TERREAZUR"
     return None
 
@@ -305,12 +327,21 @@ def normalize_invoice_dates(data: dict, text: str, filename: str) -> dict:
     data["date_paiement_prevue"] = due
     return data
 
-def finalize_document_data(data: dict, text: str, filename: str, predicted_type: str) -> dict:
+def finalize_document_data(
+    data: dict,
+    text: str,
+    filename: str,
+    predicted_type: str,
+    fournisseur_patterns: dict[str, list[str]] | None = None,
+) -> dict:
     data = dict(data)
     data["type_document"] = predicted_type
     data["fichier_source"] = filename
 
-    data["nom_fournisseur"] = normalize_supplier_name(data.get("nom_fournisseur"))
+    data["nom_fournisseur"] = normalize_supplier_name(
+        data.get("nom_fournisseur"),
+        fournisseur_patterns=fournisseur_patterns,
+    )
 
     if predicted_type == "facture":
         data = normalize_invoice_dates(data, text=text, filename=filename)
@@ -345,7 +376,9 @@ def finalize_document_data(data: dict, text: str, filename: str, predicted_type:
 
     return data
 
-def build_prompt(document_type: str, text: str) -> str:
+def build_prompt(document_type: str, text: str, fournisseur_ids: list[str] | None = None) -> str:
+    ids = fournisseur_ids or ["SYSCO", "AMBELYS", "TERREAZUR"]
+    fournisseurs_str = ", ".join(ids)
     if document_type == "bon_livraison":
         return f"""
 Extrais uniquement les informations du bon de livraison.
@@ -355,9 +388,10 @@ Règles:
 - type_document = bon_livraison
 - Si une valeur est absente, retourne null
 - numero_bon_livraison = numéro principal du BL
-- date_livraison entre 2020 et 2100 sinon null
-- normalise les montants en nombres
-- nom_fournisseur doit être exactement une des valeurs suivantes : SYSCO, AMBELYS, TERREAZUR
+- date_livraison = date de livraison du BL (entre 2020 et 2100 sinon null)
+- prix_HT_5_5pct, prix_HT_10pct, prix_HT_20pct = montants HT de CE bon de livraison selon le taux de TVA applicable
+- normalise les montants en nombres décimaux
+- nom_fournisseur doit être exactement une des valeurs suivantes : {fournisseurs_str}
 
 Texte:
 {text}
@@ -371,9 +405,10 @@ Règles:
 - Si une valeur est absente, retourne null
 - date_emission et date_paiement_prevue entre 2020 et 2100 sinon null
 - si la date de paiement n'est pas explicitement présente, utilise les conditions de paiement
-- si des bons de livraison sont présents, renseigne bons_livraisons
-- normalise les montants en nombres
-- nom_fournisseur doit être exactement une des valeurs suivantes : SYSCO, AMBELYS, TERREAZUR
+- si des bons de livraison sont référencés, renseigne bons_livraisons avec leurs numéros
+- prix_HT_5_5pct, prix_HT_10pct, prix_HT_20pct = montants HT totaux de la facture par taux de TVA
+- normalise les montants en nombres décimaux
+- nom_fournisseur doit être exactement une des valeurs suivantes : {fournisseurs_str}
 
 Texte:
 {text}
@@ -409,26 +444,20 @@ def write_to_achats_cons(
     bons: list[dict],
     template_path: str,
     output_path: str,
+    fournisseur_display: dict[str, str] | None = None,
 ) -> int:
     """
-    Ouvre le fichier de suivi trésorerie MLC (template_path), **efface d'abord
-    toutes les lignes dont le fournisseur (col C) est Sysco / Ambelys / TerreAzur**,
-    puis réinsère les factures du store à la suite des lignes des autres fournisseurs.
-    Sauvegarde dans output_path (peut être identique à template_path).
+    Ouvre le fichier de suivi trésorerie MLC, efface les lignes gérées par
+    l'appli (col C = nos fournisseurs), puis réinsère selon la structure réelle :
 
-    Colonnes remplies (valeurs saisies) :
-      C  = Fournisseur
-      D  = N° Facture
-      E  = N° BL
-      F  = Date (date_emission de la facture)
-      I  = HT 5,5 %
-      J  = HT 10 %
-      K  = HT 20 %
-      S  = Date paiement (date_paiement_prevue)
-      W  = Commentaires (nom du fichier source)
+      - UNE LIGNE PAR BL : col E = N° BL, col F = date du BL,
+        montants HT portés par le BL (prix_HT_5_5pct / 10pct / 20pct du BL)
+      - Facture sans BL : une seule ligne, col E vide, col F = date_emission,
+        montants HT de la facture
 
-    Colonnes en formule (reproduites à l'identique) :
-      A, B, G, H, L, M, N, O, P, Q, R, T, U, V, X, Y
+    Colonnes saisies : C (Fournisseur), D (Fact), E (BL), F (Date),
+                       I (HT 5.5), J (HT 10), K (HT 20), S (Date paiement), W (Commentaires)
+    Colonnes formule : A, B, G, H, L, M, N, O, P, Q, R, T, U, V, X, Y
 
     Retourne le nombre de lignes insérées.
     """
@@ -436,43 +465,34 @@ def write_to_achats_cons(
     from openpyxl import load_workbook
     from datetime import date as _date
 
-    # Fournisseurs gérés par l'appli (valeurs affichées dans col C)
-    MLC_FOURNISSEURS = {v.lower() for v in FOURNISSEUR_DISPLAY.values()}
-    # ex: {"sysco", "ambelys", "terreazur"}
+    _display = fournisseur_display if fournisseur_display is not None else FOURNISSEUR_DISPLAY
+    MLC_FOURNISSEURS = {v.lower() for v in _display.values()}
 
-    # Construire un index facture → liste de BL rattachés
-    bl_index: dict[str, list[str]] = {}
+    # Index facture → liste de dicts BL complets (avec leurs montants propres)
+    bl_par_facture: dict[str, list[dict]] = {}
     for bon in bons:
         fac_num = bon.get("numero_facture_rattachee")
         bl_num  = bon.get("numero_bon_livraison")
         if fac_num and bl_num:
-            bl_index.setdefault(str(fac_num), [])
-            if bl_num not in bl_index[str(fac_num)]:
-                bl_index[str(fac_num)].append(bl_num)
+            bl_par_facture.setdefault(str(fac_num), [])
+            if not any(b["numero_bon_livraison"] == bl_num
+                       for b in bl_par_facture[str(fac_num)]):
+                bl_par_facture[str(fac_num)].append(bon)
 
     wb = load_workbook(template_path, keep_vba=True)
     ws = wb["Achats Cons"]
 
-    # ------------------------------------------------------------------
-    # 1. Identifier et effacer les lignes MLC existantes (col C = nos fournisseurs)
-    #    On efface les cellules saisies (C-K, S, W) et les formules (A, B, G, H, L-R, T-Y)
-    #    pour remettre la ligne à blanc, sans supprimer la ligne physiquement
-    #    (évite de décaler les formules des autres onglets qui référencent Achats Cons).
-    # ------------------------------------------------------------------
+    # 1. Effacer les lignes MLC existantes
     mlc_rows: list[int] = []
     for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
-        fournisseur_cell = row[2]  # col C (index 0-based → col 3 Excel)
-        if fournisseur_cell and str(fournisseur_cell).strip().lower() in MLC_FOURNISSEURS:
+        cell_c = row[2]
+        if cell_c and str(cell_c).strip().lower() in MLC_FOURNISSEURS:
             mlc_rows.append(row_idx)
-
     for r in mlc_rows:
-        for c in range(1, 26):   # colonnes A à Y
+        for c in range(1, 26):
             ws.cell(r, c).value = None
 
-    # ------------------------------------------------------------------
-    # 2. Déterminer la première ligne disponible pour l'insertion
-    #    = première ligne entièrement vide après l'en-tête
-    # ------------------------------------------------------------------
+    # 2. Première ligne vide disponible
     first_empty = 2
     for row in ws.iter_rows(min_row=2, values_only=True):
         if any(v is not None for v in row):
@@ -480,11 +500,7 @@ def write_to_achats_cons(
         else:
             break
 
-    # ------------------------------------------------------------------
-    # 3. Insérer les factures du store
-    #    Une ligne par facture (si plusieurs BL → on met le premier en col E,
-    #    les suivants sont portés par les BL du store mais pas dupliqués ici)
-    # ------------------------------------------------------------------
+    # Helpers
     def _to_date(v):
         if v is None:
             return None
@@ -503,27 +519,13 @@ def write_to_achats_cons(
         if v is None:
             return None
         try:
-            return float(v)
+            f = float(v)
+            return f if f != 0.0 else None
         except (ValueError, TypeError):
             return None
 
-    inserted = 0
-    for facture in factures:
-        fournisseur_raw = facture.get("nom_fournisseur") or ""
-        fournisseur     = FOURNISSEUR_DISPLAY.get(fournisseur_raw.upper(), fournisseur_raw)
-        num_facture     = facture.get("numero_facture")
-        bls             = bl_index.get(str(num_facture), []) if num_facture else []
-        num_bl          = bls[0] if bls else None
-        date_emission   = _to_date(facture.get("date_emission"))
-        ht_55           = _to_float(facture.get("prix_HT_5_5pct"))
-        ht_10           = _to_float(facture.get("prix_HT_10pct"))
-        ht_20           = _to_float(facture.get("prix_HT_20pct"))
-        date_paiement   = _to_date(facture.get("date_paiement_prevue"))
-        commentaire     = facture.get("fichier_source") or facture.get("fichier_stocke") or ""
-
-        r = first_empty + inserted  # numéro de ligne Excel (1-based)
-
-        # --- Formules ---
+    def _write_row(r, fournisseur, num_facture, num_bl,
+                   date_f, ht_55, ht_10, ht_20, date_paiement, commentaire):
         ws.cell(r, 1).value  = f'=IF(AND(B{r}>=TDB!$B$6,B{r}<=TDB!$D$6),"Oui","")'
         ws.cell(r, 2).value  = f'=IF(G{r}<10,H{r}&0&G{r},H{r}&G{r})'
         ws.cell(r, 7).value  = f'=IF(F{r}="","",MONTH(F{r}))'
@@ -540,25 +542,50 @@ def write_to_achats_cons(
         ws.cell(r, 22).value = f'=IF(K{r}="","",IF(O{r}=0,"",IF(ROUND(O{r}/K{r},3)=0.2,"OK","Erreur")))'
         ws.cell(r, 24).value = f'=S{r}&"-"&C{r}&"-"&TEXT(Q{r},"0.00")'
         ws.cell(r, 25).value = f'=IFERROR(INDEX(Inputs!$D:$D,MATCH(\'Achats Cons\'!C{r},Inputs!$B:$B,0)),"")'
-
-        # --- Valeurs saisies ---
         ws.cell(r, 3).value  = fournisseur
         ws.cell(r, 4).value  = num_facture
-        ws.cell(r, 5).value  = num_bl
-        ws.cell(r, 6).value  = date_emission
+        ws.cell(r, 5).value  = num_bl or None
+        ws.cell(r, 6).value  = date_f
         ws.cell(r, 9).value  = ht_55
         ws.cell(r, 10).value = ht_10
         ws.cell(r, 11).value = ht_20
         ws.cell(r, 19).value = date_paiement
         ws.cell(r, 23).value = commentaire or None
-
-        # Format date pour les colonnes F et S
-        if date_emission:
+        if date_f:
             ws.cell(r, 6).number_format = "DD/MM/YYYY"
         if date_paiement:
             ws.cell(r, 19).number_format = "DD/MM/YYYY"
 
-        inserted += 1
+    # 3. Insérer : une ligne par BL, ou une ligne par facture sans BL
+    inserted = 0
+    for facture in factures:
+        fournisseur_raw = facture.get("nom_fournisseur") or ""
+        fournisseur     = _display.get(fournisseur_raw.upper(), fournisseur_raw)
+        num_facture     = facture.get("numero_facture")
+        date_emission   = _to_date(facture.get("date_emission"))
+        date_paiement   = _to_date(facture.get("date_paiement_prevue"))
+        commentaire     = facture.get("fichier_source") or facture.get("fichier_stocke") or ""
+        bls             = bl_par_facture.get(str(num_facture), []) if num_facture else []
+
+        if bls:
+            # Une ligne par BL — montants portés par le BL
+            for bon in bls:
+                num_bl  = bon.get("numero_bon_livraison")
+                date_bl = _to_date(bon.get("date_livraison")) or date_emission
+                ht_55   = _to_float(bon.get("prix_HT_5_5pct"))
+                ht_10   = _to_float(bon.get("prix_HT_10pct"))
+                ht_20   = _to_float(bon.get("prix_HT_20pct"))
+                _write_row(first_empty + inserted, fournisseur, num_facture, num_bl,
+                           date_bl, ht_55, ht_10, ht_20, date_paiement, commentaire)
+                inserted += 1
+        else:
+            # Pas de BL → une seule ligne avec les montants de la facture
+            ht_55 = _to_float(facture.get("prix_HT_5_5pct"))
+            ht_10 = _to_float(facture.get("prix_HT_10pct"))
+            ht_20 = _to_float(facture.get("prix_HT_20pct"))
+            _write_row(first_empty + inserted, fournisseur, num_facture, None,
+                       date_emission, ht_55, ht_10, ht_20, date_paiement, commentaire)
+            inserted += 1
 
     wb.save(output_path)
     return inserted

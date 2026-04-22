@@ -3,19 +3,22 @@
 import { useState, useEffect, useCallback } from "react";
 import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
-import { fetchFactures, exportTresorerie, getTresorerieDownloadUrl, getPdfUrl, patchFacture, type Facture } from "@/lib/api";
+import {
+  fetchFactures, fetchFournisseurs,
+  exportTresorerie, getTresorerieDownloadUrl,
+  getPdfUrl, patchFacture,
+  type Facture, type Fournisseur,
+} from "@/lib/api";
 import ModalRattachement from "./ModalRattachement";
 import ModalPDF from "./ModalPDF";
 import EditableCell from "./EditableCell";
-
-
 
 function formatDate(d: string | null) {
   if (!d) return <span className="text-neutral-400">—</span>;
   return new Date(d).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
-function formatMontant(v: number | null) {
+function formatMontant(v: number | null | undefined) {
   if (v === null || v === undefined) return <span className="text-neutral-400">—</span>;
   return (
     <span className="font-mono">
@@ -24,18 +27,27 @@ function formatMontant(v: number | null) {
   );
 }
 
+/** Somme des montants HT non-null d'une facture, null si tous absents */
+function totalHT(f: Facture): number | null {
+  const vals = [f.prix_HT_5_5pct, f.prix_HT_10pct, f.prix_HT_20pct].filter(
+    (v): v is number => v !== null && v !== undefined
+  );
+  return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) : null;
+}
+
 function isOverdue(dateStr: string | null): boolean {
   if (!dateStr) return false;
   return new Date(dateStr) < new Date();
 }
 
 export default function TableauFactures() {
-  const [data, setData] = useState<Facture[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [modalFacture, setModalFacture] = useState<Facture | null>(null);
-  const [pdfViewer, setPdfViewer]       = useState<{ url: string; titre: string } | null>(null);
+  const [data, setData]                   = useState<Facture[]>([]);
+  const [fournisseurs, setFournisseurs]   = useState<Fournisseur[]>([]);
+  const [loading, setLoading]             = useState(true);
+  const [error, setError]                 = useState<string | null>(null);
+  const [search, setSearch]               = useState("");
+  const [modalFacture, setModalFacture]   = useState<Facture | null>(null);
+  const [pdfViewer, setPdfViewer]         = useState<{ url: string; titre: string } | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [exportResult, setExportResult]   = useState<{ lignes: number } | null>(null);
   const [exportError, setExportError]     = useState<string | null>(null);
@@ -44,7 +56,9 @@ export default function TableauFactures() {
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchFactures());
+      const [factures, frs] = await Promise.all([fetchFactures(), fetchFournisseurs()]);
+      setData(factures);
+      setFournisseurs(frs);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur de chargement.");
     } finally {
@@ -122,7 +136,7 @@ export default function TableauFactures() {
       {exportResult && (
         <div className="flex items-center justify-between rounded-lg bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-400">
           <span>
-            ✅ {exportResult.lignes} facture{exportResult.lignes > 1 ? "s" : ""} injectée{exportResult.lignes > 1 ? "s" : ""} dans l&apos;onglet <strong>Achats Cons</strong> du Suivi Trésorerie MLC.
+            {exportResult.lignes} ligne{exportResult.lignes > 1 ? "s" : ""} enregistrée{exportResult.lignes > 1 ? "s" : ""} dans l&apos;onglet <strong>Achats Cons</strong> du Suivi Trésorerie MLC.
           </span>
           <button
             onClick={() => setExportResult(null)}
@@ -169,7 +183,7 @@ export default function TableauFactures() {
               <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Fournisseur</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Émission</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Échéance</th>
-              <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Montant TTC</th>
+              <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Total HT</th>
               <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">HT 5,5%</th>
               <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">HT 10%</th>
               <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">HT 20%</th>
@@ -215,7 +229,7 @@ export default function TableauFactures() {
                     <EditableCell
                       value={f.nom_fournisseur}
                       type="select"
-                      options={["SYSCO", "AMBELYS", "TERREAZUR"]}
+                      options={fournisseurs.map((fr) => fr.id)}
                       onSave={save("nom_fournisseur")}
                       renderValue={(v) => supplierBadge(v as string | null)}
                     />
@@ -242,15 +256,9 @@ export default function TableauFactures() {
                         : "text-neutral-600 dark:text-neutral-400"}
                     />
                   </td>
-                  {/* Montant TTC */}
-                  <td className="px-4 py-3 text-right">
-                    <EditableCell
-                      value={f.montant_total}
-                      type="number"
-                      onSave={save("montant_total")}
-                      renderValue={(v) => formatMontant(v as number | null)}
-                      className="text-neutral-800 dark:text-neutral-200"
-                    />
+                  {/* Total HT calculé (somme des HT de la facture) */}
+                  <td className="px-4 py-3 text-right font-medium text-neutral-800 dark:text-neutral-200">
+                    {formatMontant(totalHT(f))}
                   </td>
                   {/* HT 5,5% */}
                   <td className="px-4 py-3 text-right">

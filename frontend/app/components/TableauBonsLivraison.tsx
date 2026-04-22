@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
-import { fetchBonsLivraison, getTresorerieDownloadUrl, getPdfUrl, patchBon, type BonLivraison } from "@/lib/api";
+import { fetchBonsLivraison, fetchFournisseurs, getTresorerieDownloadUrl, getPdfUrl, patchBon, type BonLivraison, type Fournisseur } from "@/lib/api";
 import ModalRattachement from "./ModalRattachement";
 import ModalPDF from "./ModalPDF";
 import EditableCell from "./EditableCell";
@@ -13,28 +13,39 @@ function formatDate(d: string | null) {
   return new Date(d).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
-function formatMontant(v: number | null) {
+function formatMontant(v: number | null | undefined) {
   if (v === null || v === undefined) return <span className="text-neutral-400">—</span>;
   return (
-    <span className="font-mono">
+    <span className="font-mono text-xs">
       {v.toLocaleString("fr-FR", { style: "currency", currency: "EUR" })}
     </span>
   );
 }
 
+/** Somme des montants HT non-null d'un BL */
+function totalHTBon(b: BonLivraison): number | null {
+  const vals = [b.prix_HT_5_5pct, b.prix_HT_10pct, b.prix_HT_20pct].filter(
+    (v): v is number => v !== null && v !== undefined
+  );
+  return vals.length > 0 ? vals.reduce((a, c) => a + c, 0) : null;
+}
+
 export default function TableauBonsLivraison() {
-  const [data, setData] = useState<BonLivraison[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [modalBon, setModalBon]   = useState<BonLivraison | null>(null);
-  const [pdfViewer, setPdfViewer] = useState<{ url: string; titre: string } | null>(null);
+  const [data, setData]               = useState<BonLivraison[]>([]);
+  const [fournisseurs, setFournisseurs] = useState<Fournisseur[]>([]);
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState<string | null>(null);
+  const [search, setSearch]           = useState("");
+  const [modalBon, setModalBon]       = useState<BonLivraison | null>(null);
+  const [pdfViewer, setPdfViewer]     = useState<{ url: string; titre: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchBonsLivraison());
+      const [bons, frs] = await Promise.all([fetchBonsLivraison(), fetchFournisseurs()]);
+      setData(bons);
+      setFournisseurs(frs);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur de chargement.");
     } finally {
@@ -105,16 +116,18 @@ export default function TableauBonsLivraison() {
                 <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">N° BL</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Fournisseur</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Date livraison</th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Montant</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">HT 5,5%</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">HT 10%</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">HT 20%</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Total HT</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Facture rattachée</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Fichier source</th>
                 <th className="px-4 py-3 w-20"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-16 text-center text-sm text-neutral-400">
+                  <td colSpan={9} className="px-4 py-16 text-center text-sm text-neutral-400">
                     {data.length === 0
                       ? "Aucun bon de livraison. Importez des PDFs depuis le dashboard."
                       : "Aucun résultat pour cette recherche."}
@@ -124,7 +137,8 @@ export default function TableauBonsLivraison() {
                 filtered.map((b, i) => {
                   const save = (field: string) => async (val: string) => {
                     const payload: Record<string, string | number | null> = {};
-                    payload[field] = field === "montant_total"
+                    const numFields = ["montant_total","prix_HT_5_5pct","prix_HT_10pct","prix_HT_20pct"];
+                    payload[field] = numFields.includes(field)
                       ? (val === "" ? null : parseFloat(val))
                       : (val === "" ? null : val);
                     await patchBon(b.numero_bon_livraison!, payload as never);
@@ -149,7 +163,7 @@ export default function TableauBonsLivraison() {
                       <EditableCell
                         value={b.nom_fournisseur}
                         type="select"
-                        options={["SYSCO", "AMBELYS", "TERREAZUR"]}
+                        options={fournisseurs.map((fr) => fr.id)}
                         onSave={save("nom_fournisseur")}
                         renderValue={(v) => supplierBadge(v as string | null)}
                       />
@@ -164,15 +178,39 @@ export default function TableauBonsLivraison() {
                         className="text-neutral-600 dark:text-neutral-400"
                       />
                     </td>
-                    {/* Montant */}
+                    {/* HT 5,5% */}
                     <td className="px-4 py-3 text-right">
                       <EditableCell
-                        value={b.montant_total}
+                        value={b.prix_HT_5_5pct}
                         type="number"
-                        onSave={save("montant_total")}
+                        onSave={save("prix_HT_5_5pct")}
                         renderValue={(v) => formatMontant(v as number | null)}
-                        className="text-neutral-800 dark:text-neutral-200"
+                        className="text-neutral-600 dark:text-neutral-400"
                       />
+                    </td>
+                    {/* HT 10% */}
+                    <td className="px-4 py-3 text-right">
+                      <EditableCell
+                        value={b.prix_HT_10pct}
+                        type="number"
+                        onSave={save("prix_HT_10pct")}
+                        renderValue={(v) => formatMontant(v as number | null)}
+                        className="text-neutral-600 dark:text-neutral-400"
+                      />
+                    </td>
+                    {/* HT 20% */}
+                    <td className="px-4 py-3 text-right">
+                      <EditableCell
+                        value={b.prix_HT_20pct}
+                        type="number"
+                        onSave={save("prix_HT_20pct")}
+                        renderValue={(v) => formatMontant(v as number | null)}
+                        className="text-neutral-600 dark:text-neutral-400"
+                      />
+                    </td>
+                    {/* Total HT calculé */}
+                    <td className="px-4 py-3 text-right font-medium text-neutral-800 dark:text-neutral-200">
+                      {formatMontant(totalHTBon(b))}
                     </td>
                     <td className="px-4 py-3">
                       {b.numero_facture_rattachee ? (

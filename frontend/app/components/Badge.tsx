@@ -25,6 +25,7 @@ export default function Badge({ label, variant = "neutral" }: BadgeProps) {
 
 export function supplierBadge(name: string | null) {
   if (!name) return <Badge label="—" variant="neutral" />;
+  // Couleurs fixes pour les fournisseurs historiques, neutral pour les nouveaux
   const map: Record<string, BadgeVariant> = {
     SYSCO: "info",
     AMBELYS: "success",
