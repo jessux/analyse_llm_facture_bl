@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
 import { fetchBonsLivraison, getExcelDownloadUrl, type BonLivraison } from "@/lib/api";
+import ModalRattachement from "./ModalRattachement";
 
 function formatDate(d: string | null) {
   if (!d) return <span className="text-neutral-400">—</span>;
@@ -24,6 +25,7 @@ export default function TableauBonsLivraison() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [modalBon, setModalBon] = useState<BonLivraison | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -103,6 +105,7 @@ export default function TableauBonsLivraison() {
                 <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Montant</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Facture rattachée</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Fichier source</th>
+                <th className="px-4 py-3 w-10"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -140,6 +143,19 @@ export default function TableauBonsLivraison() {
                     <td className="px-4 py-3 text-xs text-neutral-400 dark:text-neutral-500 font-mono truncate max-w-[180px]">
                       {b.fichier_source}
                     </td>
+                    <td className="px-3 py-3">
+                      {b.numero_bon_livraison && (
+                        <button
+                          onClick={() => setModalBon(b)}
+                          title="Gérer le rattachement"
+                          className="flex items-center justify-center w-7 h-7 rounded-md text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                          </svg>
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))
               )}
@@ -153,6 +169,17 @@ export default function TableauBonsLivraison() {
           {filtered.length} résultat{filtered.length > 1 ? "s" : ""}
           {search && ` pour « ${search} »`}
         </p>
+      )}
+
+      {/* Modal rattachement */}
+      {modalBon && modalBon.numero_bon_livraison && (
+        <ModalRattachement
+          mode="bl_vers_facture"
+          numeroSource={modalBon.numero_bon_livraison}
+          factureRattachee={modalBon.numero_facture_rattachee}
+          onClose={() => setModalBon(null)}
+          onSuccess={load}
+        />
       )}
     </div>
   );
