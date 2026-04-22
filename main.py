@@ -558,6 +558,13 @@ def write_to_achats_cons(
 
     # 3. Insérer : une ligne par BL, ou une ligne par facture sans BL
     inserted = 0
+    inserted_bl_nums: set[str] = set()
+    factures_ids = {
+        str(f.get("numero_facture"))
+        for f in factures
+        if f.get("numero_facture")
+    }
+
     for facture in factures:
         fournisseur_raw = facture.get("nom_fournisseur") or ""
         fournisseur     = _display.get(fournisseur_raw.upper(), fournisseur_raw)
@@ -578,6 +585,8 @@ def write_to_achats_cons(
                 _write_row(first_empty + inserted, fournisseur, num_facture, num_bl,
                            date_bl, ht_55, ht_10, ht_20, date_paiement, commentaire)
                 inserted += 1
+                if num_bl:
+                    inserted_bl_nums.add(str(num_bl))
         else:
             # Pas de BL → une seule ligne avec les montants de la facture
             ht_55 = _to_float(facture.get("prix_HT_5_5pct"))
@@ -586,6 +595,39 @@ def write_to_achats_cons(
             _write_row(first_empty + inserted, fournisseur, num_facture, None,
                        date_emission, ht_55, ht_10, ht_20, date_paiement, commentaire)
             inserted += 1
+
+    # 4. Ajouter les BL sans facture (ou rattachés à une facture absente)
+    for bon in bons:
+        num_bl = bon.get("numero_bon_livraison")
+        if not num_bl:
+            continue
+        fac_num = bon.get("numero_facture_rattachee")
+        if str(num_bl) in inserted_bl_nums:
+            continue
+        if fac_num and str(fac_num) in factures_ids:
+            continue
+
+        fournisseur_raw = bon.get("nom_fournisseur") or ""
+        fournisseur = _display.get(str(fournisseur_raw).upper(), fournisseur_raw)
+        date_bl = _to_date(bon.get("date_livraison"))
+        ht_55 = _to_float(bon.get("prix_HT_5_5pct"))
+        ht_10 = _to_float(bon.get("prix_HT_10pct"))
+        ht_20 = _to_float(bon.get("prix_HT_20pct"))
+        commentaire = bon.get("fichier_source") or bon.get("fichier_stocke") or ""
+
+        _write_row(
+            first_empty + inserted,
+            fournisseur,
+            None,
+            num_bl,
+            date_bl,
+            ht_55,
+            ht_10,
+            ht_20,
+            None,
+            commentaire,
+        )
+        inserted += 1
 
     wb.save(output_path)
     return inserted

@@ -10,6 +10,7 @@ import asyncio
 import tempfile
 import shutil
 import os
+import re
 
 from main import (
     load_pdf_text,
@@ -63,14 +64,64 @@ TRESORERIE_XLSM = os.getenv(
 _store: dict[str, dict[str, dict]] = {"factures": {}, "bons": {}}
 
 
+def _recompute_derived(record: dict) -> dict:
+    """
+    Recalcule les champs dérivés (TVA, TTC, vérifications) depuis les bases HT.
+    Modifie le dict en place et le retourne.
+    """
+    ht_55 = record.get("prix_HT_5_5pct")
+    ht_10 = record.get("prix_HT_10pct")
+    ht_20 = record.get("prix_HT_20pct")
+
+    # Total HT
+    ht_vals = [v for v in (ht_55, ht_10, ht_20) if v is not None]
+    record["montant_total"] = round(sum(ht_vals), 2) if ht_vals else None
+
+    # TVA calculée
+    tva_55 = round(ht_55 * 0.055, 2) if ht_55 is not None else None
+    tva_10 = round(ht_10 * 0.1,   2) if ht_10 is not None else None
+    tva_20 = round(ht_20 * 0.2,   2) if ht_20 is not None else None
+    record["tva_5_5pct"] = tva_55
+    record["tva_10pct"]  = tva_10
+    record["tva_20pct"]  = tva_20
+
+    # Total TVA
+    tva_vals = [v for v in (tva_55, tva_10, tva_20) if v is not None]
+    total_tva = round(sum(tva_vals), 2) if tva_vals else None
+    record["total_tva"] = total_tva
+
+    # TTC
+    tot_ht = record["montant_total"]
+    if tot_ht is not None or total_tva is not None:
+        record["montant_ttc"] = round((tot_ht or 0) + (total_tva or 0), 2)
+    else:
+        record["montant_ttc"] = None
+
+    # Vérifications
+    def _vf(ht, tva, rate):
+        if ht is None or tva is None or ht == 0:
+            return ""
+        return "OK" if round(tva / ht, 3) == rate else "Erreur"
+
+    record["verif_tva_5_5"] = _vf(ht_55, tva_55, 0.055)
+    record["verif_tva_10"]  = _vf(ht_10, tva_10, 0.1)
+    record["verif_tva_20"]  = _vf(ht_20, tva_20, 0.2)
+
+    return record
+
+
 @app.on_event("startup")
 def _startup_load_excel() -> None:
     """
     Au démarrage, recharge le store depuis l'onglet 'Achats Cons' du fichier
-    'Suivi trésorerie MLC.xlsm'. Seules les lignes dont le fournisseur est
-    Sysco / Ambelys / TerreAzur (col C) et dont la colonne W (Commentaires)
-    contient le nom du fichier PDF source sont chargées comme factures.
-    Les BL (col E) sont reconstruits à partir des lignes de factures.
+    'Suivi trésorerie MLC.xlsm' en mode ligne-à-ligne.
+
+    Cas gérés :
+    - ligne facture sans BL : D rempli, E vide
+    - ligne BL rattaché à facture : D rempli, E rempli
+    - ligne BL sans facture : D vide, E rempli
+
+    Les factures multi-BL sont agrégées par numero_facture pour les montants HT.
     """
     if not os.path.exists(TRESORERIE_XLSM):
         print(f"[WARN] Fichier '{TRESORERIE_XLSM}' introuvable - store vide. "
@@ -78,19 +129,40 @@ def _startup_load_excel() -> None:
         return
 
     try:
-        wb = load_workbook(TRESORERIE_XLSM, read_only=True, keep_vba=True)
+        # data_only=True pour lire les valeurs calculées des formules Excel (cache)
+        wb = load_workbook(TRESORERIE_XLSM, read_only=True, data_only=True)
         ws = wb["Achats Cons"]
 
-        # Mapping fournisseur affiché → clé interne (dynamique depuis _fournisseurs)
-        DISPLAY_TO_KEY = _get_display_to_key()
+        # Mapping fournisseur affiché -> clé interne
+        display_to_key = _get_display_to_key()
 
         for row in ws.iter_rows(min_row=2, values_only=True):
             fournisseur_raw = row[2]   # col C
             if not fournisseur_raw:
                 continue
-            fournisseur_key = DISPLAY_TO_KEY.get(str(fournisseur_raw).strip().lower())
+            fournisseur_display = str(fournisseur_raw).strip()
+            fournisseur_key = display_to_key.get(fournisseur_display.lower())
             if not fournisseur_key:
-                continue  # ligne d'un autre fournisseur, on ignore
+                # Aucun filtre fournisseur : on enregistre automatiquement
+                # les fournisseurs inconnus trouvés dans le fichier.
+                proposed = _make_supplier_key(fournisseur_display)
+                fournisseur_key = proposed
+                idx = 2
+                while (
+                    fournisseur_key in _fournisseurs
+                    and _fournisseurs[fournisseur_key]["nom_affiche"].lower() != fournisseur_display.lower()
+                ):
+                    fournisseur_key = f"{proposed}_{idx}"
+                    idx += 1
+
+                if fournisseur_key not in _fournisseurs:
+                    _fournisseurs[fournisseur_key] = {
+                        "id": fournisseur_key,
+                        "nom_affiche": fournisseur_display,
+                        "patterns": [fournisseur_display.lower()],
+                    }
+
+                display_to_key[fournisseur_display.lower()] = fournisseur_key
 
             num_facture  = str(row[3]).strip() if row[3] is not None else None
             num_bl       = str(row[4]).strip() if row[4] is not None else None
@@ -119,21 +191,34 @@ def _startup_load_excel() -> None:
                 except (ValueError, TypeError):
                     return None
 
-            if not num_facture:
+            # Une ligne utile doit contenir une facture ou un BL.
+            if not num_facture and not num_bl:
                 continue
 
-            # Construire ou enrichir l'entrée facture
-            if num_facture not in _store["factures"]:
+            ht_55_v = _to_float(ht_55)
+            ht_10_v = _to_float(ht_10)
+            ht_20_v = _to_float(ht_20)
+
+            # Construire ou enrichir l'entrée facture (si la ligne porte une facture)
+            if num_facture and num_facture not in _store["factures"]:
                 record: dict = {
                     "type_document":       "facture",
                     "numero_facture":      num_facture,
                     "nom_fournisseur":     fournisseur_key,
                     "date_emission":       _to_date(date_emission),
                     "date_paiement_prevue": _to_date(date_paiement),
-                    "prix_HT_5_5pct":      _to_float(ht_55),
-                    "prix_HT_10pct":       _to_float(ht_10),
-                    "prix_HT_20pct":       _to_float(ht_20),
+                    "prix_HT_5_5pct":      ht_55_v,
+                    "prix_HT_10pct":       ht_10_v,
+                    "prix_HT_20pct":       ht_20_v,
                     "montant_total":       None,
+                    "tva_5_5pct":          None,
+                    "tva_10pct":           None,
+                    "tva_20pct":           None,
+                    "total_tva":           None,
+                    "montant_ttc":         None,
+                    "verif_tva_5_5":       "",
+                    "verif_tva_10":        "",
+                    "verif_tva_20":        "",
                     "bons_livraisons":     [],
                     "fichier_source":      commentaire or "",
                     "fichier_stocke":      None,
@@ -143,31 +228,75 @@ def _startup_load_excel() -> None:
                     candidate = os.path.join(STORAGE_DIR, commentaire)
                     if os.path.exists(candidate):
                         record["fichier_stocke"] = commentaire
+                _recompute_derived(record)
                 _store["factures"][num_facture] = record
-            else:
-                # Ligne supplémentaire pour la même facture (plusieurs BL)
+            elif num_facture:
+                # Ligne supplémentaire pour la même facture (plusieurs BL) :
+                # on agrège les HT par taux.
                 record = _store["factures"][num_facture]
+                if ht_55_v is not None:
+                    record["prix_HT_5_5pct"] = round((record.get("prix_HT_5_5pct") or 0.0) + ht_55_v, 2)
+                if ht_10_v is not None:
+                    record["prix_HT_10pct"] = round((record.get("prix_HT_10pct") or 0.0) + ht_10_v, 2)
+                if ht_20_v is not None:
+                    record["prix_HT_20pct"] = round((record.get("prix_HT_20pct") or 0.0) + ht_20_v, 2)
+                if not record.get("date_emission"):
+                    record["date_emission"] = _to_date(date_emission)
+                if not record.get("date_paiement_prevue"):
+                    record["date_paiement_prevue"] = _to_date(date_paiement)
+                if commentaire and not record.get("fichier_source"):
+                    record["fichier_source"] = commentaire
+                if commentaire and not record.get("fichier_stocke"):
+                    candidate = os.path.join(STORAGE_DIR, commentaire)
+                    if os.path.exists(candidate):
+                        record["fichier_stocke"] = commentaire
+                _recompute_derived(record)
 
             # Rattacher le BL à la facture
-            if num_bl and num_bl not in _store["factures"][num_facture]["bons_livraisons"]:
+            if num_facture and num_bl and num_bl not in _store["factures"][num_facture]["bons_livraisons"]:
                 _store["factures"][num_facture]["bons_livraisons"].append(num_bl)
 
-            # Créer l'entrée BL si présent
-            # La date col F et les montants HT sont portés par le BL (pas la facture)
+            # Créer/enrichir l'entrée BL si présent
             if num_bl and num_bl not in _store["bons"]:
                 _store["bons"][num_bl] = {
                     "type_document":           "bon_livraison",
                     "numero_bon_livraison":    num_bl,
                     "nom_fournisseur":         fournisseur_key,
                     "date_livraison":          _to_date(date_emission),  # col F = date du BL
-                    "prix_HT_5_5pct":          _to_float(ht_55),
-                    "prix_HT_10pct":           _to_float(ht_10),
-                    "prix_HT_20pct":           _to_float(ht_20),
+                    "prix_HT_5_5pct":          ht_55_v,
+                    "prix_HT_10pct":           ht_10_v,
+                    "prix_HT_20pct":           ht_20_v,
                     "montant_total":           None,
+                    "tva_5_5pct":              None,
+                    "tva_10pct":               None,
+                    "tva_20pct":               None,
+                    "total_tva":               None,
+                    "montant_ttc":             None,
+                    "verif_tva_5_5":           "",
+                    "verif_tva_10":            "",
+                    "verif_tva_20":            "",
                     "numero_facture_rattachee": num_facture,
                     "fichier_source":          commentaire or "",
                     "fichier_stocke":          None,
                 }
+                if commentaire:
+                    candidate = os.path.join(STORAGE_DIR, commentaire)
+                    if os.path.exists(candidate):
+                        _store["bons"][num_bl]["fichier_stocke"] = commentaire
+                _recompute_derived(_store["bons"][num_bl])
+            elif num_bl:
+                bon = _store["bons"][num_bl]
+                if bon.get("numero_facture_rattachee") is None and num_facture:
+                    bon["numero_facture_rattachee"] = num_facture
+                if not bon.get("date_livraison"):
+                    bon["date_livraison"] = _to_date(date_emission)
+                if commentaire and not bon.get("fichier_source"):
+                    bon["fichier_source"] = commentaire
+                if commentaire and not bon.get("fichier_stocke"):
+                    candidate = os.path.join(STORAGE_DIR, commentaire)
+                    if os.path.exists(candidate):
+                        bon["fichier_stocke"] = commentaire
+                _recompute_derived(bon)
 
         # Sérialiser les dates en strings ISO pour le store
         for f in _store["factures"].values():
@@ -209,6 +338,7 @@ def _upsert_facture(data: dict) -> tuple[dict, str]:
     if not numero:
         return data, "rejected"
     action = "updated" if numero in _store["factures"] else "created"
+    _recompute_derived(data)
     _store["factures"][numero] = data
     return data, action
 
@@ -223,6 +353,7 @@ def _upsert_bon(data: dict) -> tuple[dict, str]:
     if not numero:
         return data, "rejected"
     action = "updated" if numero in _store["bons"] else "created"
+    _recompute_derived(data)
     _store["bons"][numero] = data
     return data, action
 
@@ -258,6 +389,12 @@ def _get_fournisseur_display() -> dict[str, str]:
 def _get_display_to_key() -> dict[str, str]:
     """Retourne {nom_affiche.lower() → id} pour la lecture du xlsm."""
     return {v["nom_affiche"].lower(): k for k, v in _fournisseurs.items()}
+
+
+def _make_supplier_key(display_name: str) -> str:
+    """Construit une clé fournisseur stable depuis le libellé Excel."""
+    base = re.sub(r"[^A-Z0-9]+", "_", display_name.upper()).strip("_")
+    return base or "FOURNISSEUR_INCONNU"
 
 
 # ---------------------------------------------------------------------------
@@ -420,11 +557,12 @@ class RattachementFacture(BaseModel):
 # Champs éditables par type de document
 FACTURE_EDITABLE_FIELDS = {
     "date_emission", "date_paiement_prevue",
-    "montant_total", "prix_HT_5_5pct", "prix_HT_10pct", "prix_HT_20pct",
+    "prix_HT_5_5pct", "prix_HT_10pct", "prix_HT_20pct",
     "numero_facture", "nom_fournisseur",
 }
 BON_EDITABLE_FIELDS = {
-    "date_livraison", "montant_total",
+    "date_livraison",
+    "prix_HT_5_5pct", "prix_HT_10pct", "prix_HT_20pct",
     "numero_bon_livraison", "nom_fournisseur",
 }
 
@@ -470,11 +608,12 @@ def patch_facture(numero_facture: str, body: PatchFacture):
                 raise HTTPException(status_code=422, detail=f"Format de date invalide pour '{date_field}' (attendu : YYYY-MM-DD).")
 
     # Validation fournisseur
-    if "nom_fournisseur" in updates and updates["nom_fournisseur"] not in ("SYSCO", "AMBELYS", "TERREAZUR"):
-        raise HTTPException(status_code=422, detail="nom_fournisseur doit être SYSCO, AMBELYS ou TERREAZUR.")
+    if "nom_fournisseur" in updates and updates["nom_fournisseur"] not in _fournisseurs:
+        raise HTTPException(status_code=422, detail="nom_fournisseur inconnu dans la liste des fournisseurs configurés.")
 
     nouveau_numero = updates.pop("numero_facture", None)
     facture.update(updates)
+    _recompute_derived(facture)
 
     # Changement de numéro : réindexation
     if nouveau_numero and nouveau_numero != numero_facture:
@@ -510,11 +649,12 @@ def patch_bon(numero_bl: str, body: PatchBon):
             raise HTTPException(status_code=422, detail="Format de date invalide pour 'date_livraison' (attendu : YYYY-MM-DD).")
 
     # Validation fournisseur
-    if "nom_fournisseur" in updates and updates["nom_fournisseur"] not in ("SYSCO", "AMBELYS", "TERREAZUR"):
-        raise HTTPException(status_code=422, detail="nom_fournisseur doit être SYSCO, AMBELYS ou TERREAZUR.")
+    if "nom_fournisseur" in updates and updates["nom_fournisseur"] not in _fournisseurs:
+        raise HTTPException(status_code=422, detail="nom_fournisseur inconnu dans la liste des fournisseurs configurés.")
 
     nouveau_numero = updates.pop("numero_bon_livraison", None)
     bon.update(updates)
+    _recompute_derived(bon)
 
     # Changement de numéro : réindexation
     if nouveau_numero and nouveau_numero != numero_bl:
@@ -708,7 +848,7 @@ def get_stats():
     }
     for b in bons:
         fac = b.get("numero_facture_rattachee")
-        if fac and fac not in factures_avec_ht:
+        if not fac or fac not in factures_avec_ht:
             for field in ("prix_HT_5_5pct", "prix_HT_10pct", "prix_HT_20pct"):
                 v = b.get(field)
                 if v is not None:

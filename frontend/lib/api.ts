@@ -4,15 +4,28 @@ const API_BASE = "/backend";
 // Types
 // ---------------------------------------------------------------------------
 
+export type FournisseurKey = "SYSCO" | "AMBELYS" | "TERREAZUR";
+export const FOURNISSEURS: FournisseurKey[] = ["SYSCO", "AMBELYS", "TERREAZUR"];
+
 export interface Facture {
   numero_facture: string | null;
-  nom_fournisseur: string | null;
+  nom_fournisseur: FournisseurKey | null;
   date_emission: string | null;
   date_paiement_prevue: string | null;
-  montant_total: number | null;
+  // Bases HT (éditables)
   prix_HT_5_5pct: number | null;
   prix_HT_10pct: number | null;
   prix_HT_20pct: number | null;
+  // Dérivés calculés côté serveur
+  montant_total: number | null;
+  tva_5_5pct: number | null;
+  tva_10pct: number | null;
+  tva_20pct: number | null;
+  total_tva: number | null;
+  montant_ttc: number | null;
+  verif_tva_5_5: string;
+  verif_tva_10: string;
+  verif_tva_20: string;
   bons_livraisons: string[];
   fichier_source: string;
   fichier_stocke: string | null;
@@ -20,12 +33,22 @@ export interface Facture {
 
 export interface BonLivraison {
   numero_bon_livraison: string | null;
-  nom_fournisseur: string | null;
+  nom_fournisseur: FournisseurKey | null;
   date_livraison: string | null;
-  montant_total: number | null;
+  // Bases HT (éditables)
   prix_HT_5_5pct: number | null;
   prix_HT_10pct: number | null;
   prix_HT_20pct: number | null;
+  // Dérivés calculés côté serveur
+  montant_total: number | null;
+  tva_5_5pct: number | null;
+  tva_10pct: number | null;
+  tva_20pct: number | null;
+  total_tva: number | null;
+  montant_ttc: number | null;
+  verif_tva_5_5: string;
+  verif_tva_10: string;
+  verif_tva_20: string;
   numero_facture_rattachee: string | null;
   fichier_source: string;
   fichier_stocke: string | null;
@@ -180,12 +203,13 @@ export async function rattacherFactureaBL(
 
 export type PatchFacturePayload = Partial<Pick<Facture,
   "date_emission" | "date_paiement_prevue" |
-  "montant_total" | "prix_HT_5_5pct" | "prix_HT_10pct" | "prix_HT_20pct" |
+  "prix_HT_5_5pct" | "prix_HT_10pct" | "prix_HT_20pct" |
   "numero_facture" | "nom_fournisseur"
 >>;
 
 export type PatchBonPayload = Partial<Pick<BonLivraison,
-  "date_livraison" | "montant_total" |
+  "date_livraison" |
+  "prix_HT_5_5pct" | "prix_HT_10pct" | "prix_HT_20pct" |
   "numero_bon_livraison" | "nom_fournisseur"
 >>;
 
