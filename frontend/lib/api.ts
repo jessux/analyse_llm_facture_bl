@@ -35,9 +35,13 @@ export interface Stats {
 
 export interface UploadResult {
   traites: number;
+  created: { factures: number; bons: number };
+  updated: { factures: number; bons: number };
+  rejetes: { fichier: string; type: string; raison: string }[];
+  erreurs: { fichier: string; erreur: string }[];
+  // rétrocompat
   factures: number;
   bons: number;
-  erreurs: { fichier: string; erreur: string }[];
 }
 
 // ---------------------------------------------------------------------------

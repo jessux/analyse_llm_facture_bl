@@ -8,7 +8,7 @@ type UploadStatus = "idle" | "dragging" | "uploading" | "success" | "error";
 
 interface UploadedFile {
   file: File;
-  status: "pending" | "processing" | "done" | "error";
+  status: "pending" | "processing" | "done" | "updated" | "rejected" | "error";
 }
 
 interface UploadZoneProps {
@@ -66,11 +66,20 @@ export default function UploadZone({ onSuccess }: UploadZoneProps) {
     try {
       const res = await uploadDocuments(files.map((f) => f.file));
       setResult(res);
-      const errorFiles = new Set(res.erreurs.map((e) => e.fichier));
+      const errorFiles    = new Set(res.erreurs.map((e) => e.fichier));
+      const rejectedFiles = new Set(res.rejetes?.map((r) => r.fichier) ?? []);
+      const updatedFiles  = new Set([
+        // on ne peut pas savoir par fichier si c'est updated sans info supplémentaire
+        // on marque "updated" si le fichier n'est ni en erreur ni rejeté et qu'il y a des updates
+      ]);
       setFiles((prev) =>
         prev.map((f) => ({
           ...f,
-          status: errorFiles.has(f.file.name) ? "error" : "done",
+          status: errorFiles.has(f.file.name)
+            ? "error"
+            : rejectedFiles.has(f.file.name)
+            ? "rejected"
+            : "done",
         }))
       );
       setStatus("success");
@@ -138,21 +147,62 @@ export default function UploadZone({ onSuccess }: UploadZoneProps) {
 
       {/* Résultat succès */}
       {status === "success" && result && (
-        <div className="flex items-start gap-2 rounded-lg bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 px-4 py-3">
-          <CheckIcon className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
-          <div className="text-sm text-emerald-700 dark:text-emerald-400">
-            <span className="font-medium">
-              {result.traites} document{result.traites > 1 ? "s" : ""} traité{result.traites > 1 ? "s" : ""}
-            </span>
-            {" — "}
-            {result.factures} facture{result.factures > 1 ? "s" : ""},
-            {" "}{result.bons} bon{result.bons > 1 ? "s" : ""} de livraison
-            {result.erreurs.length > 0 && (
-              <span className="text-amber-600 dark:text-amber-400">
-                {" · "}{result.erreurs.length} erreur{result.erreurs.length > 1 ? "s" : ""}
+        <div className="flex flex-col gap-2">
+          {/* Ligne principale */}
+          <div className="flex items-start gap-2 rounded-lg bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 px-4 py-3">
+            <CheckIcon className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-emerald-700 dark:text-emerald-400">
+              <span className="font-medium">
+                {result.traites} document{result.traites > 1 ? "s" : ""} traité{result.traites > 1 ? "s" : ""}
               </span>
-            )}
+              {result.created.factures + result.created.bons > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 dark:bg-emerald-900 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+                  +{result.created.factures + result.created.bons} nouveau{result.created.factures + result.created.bons > 1 ? "x" : ""}
+                </span>
+              )}
+              {result.updated.factures + result.updated.bons > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-md bg-blue-100 dark:bg-blue-900 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">
+                  ↻ {result.updated.factures + result.updated.bons} mis à jour
+                </span>
+              )}
+            </div>
           </div>
+
+          {/* Documents rejetés (numéro null) */}
+          {result.rejetes?.length > 0 && (
+            <div className="rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 px-4 py-3">
+              <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-1.5">
+                {result.rejetes.length} document{result.rejetes.length > 1 ? "s" : ""} rejeté{result.rejetes.length > 1 ? "s" : ""} — numéro non extrait
+              </p>
+              <ul className="flex flex-col gap-1">
+                {result.rejetes.map((r, i) => (
+                  <li key={i} className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
+                    <span className="font-mono truncate">{r.fichier}</span>
+                    <span className="text-amber-400 dark:text-amber-600">·</span>
+                    <span>{r.raison}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Erreurs techniques */}
+          {result.erreurs.length > 0 && (
+            <div className="rounded-lg bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 px-4 py-3">
+              <p className="text-xs font-semibold text-red-700 dark:text-red-400 mb-1.5">
+                {result.erreurs.length} erreur{result.erreurs.length > 1 ? "s" : ""} technique{result.erreurs.length > 1 ? "s" : ""}
+              </p>
+              <ul className="flex flex-col gap-1">
+                {result.erreurs.map((e, i) => (
+                  <li key={i} className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
+                    <span className="font-mono truncate">{e.fichier}</span>
+                    <span className="text-red-400 dark:text-red-600">·</span>
+                    <span>{e.erreur}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 
@@ -186,10 +236,28 @@ export default function UploadZone({ onSuccess }: UploadZoneProps) {
                     <SpinnerIcon className="w-4 h-4 text-neutral-400 animate-spin" />
                   )}
                   {item.status === "done" && (
-                    <CheckIcon className="w-4 h-4 text-emerald-500" />
+                    <span className="flex items-center gap-1">
+                      <CheckIcon className="w-4 h-4 text-emerald-500" />
+                      <span className="text-xs text-emerald-600 dark:text-emerald-400">Importé</span>
+                    </span>
+                  )}
+                  {item.status === "updated" && (
+                    <span className="flex items-center gap-1">
+                      <span className="text-blue-500 text-sm font-bold">↻</span>
+                      <span className="text-xs text-blue-600 dark:text-blue-400">Mis à jour</span>
+                    </span>
+                  )}
+                  {item.status === "rejected" && (
+                    <span className="flex items-center gap-1">
+                      <span className="text-amber-500 text-sm">⚠</span>
+                      <span className="text-xs text-amber-600 dark:text-amber-400">Rejeté</span>
+                    </span>
                   )}
                   {item.status === "error" && (
-                    <XIcon className="w-4 h-4 text-red-500" />
+                    <span className="flex items-center gap-1">
+                      <XIcon className="w-4 h-4 text-red-500" />
+                      <span className="text-xs text-red-600 dark:text-red-400">Erreur</span>
+                    </span>
                   )}
                   {item.status === "pending" && (
                     <button
