@@ -1,9 +1,28 @@
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
 import UploadZone from "@/app/components/UploadZone";
 import StatCard from "@/app/components/StatCard";
 import { DocumentIcon, TruckIcon, EuroIcon, ChartIcon } from "@/app/components/Icons";
+import { fetchStats, type Stats } from "@/lib/api";
 import Link from "next/link";
 
 export default function Home() {
+  const [stats, setStats] = useState<Stats | null>(null);
+
+  const loadStats = useCallback(async () => {
+    try {
+      setStats(await fetchStats());
+    } catch {
+      setStats(null);
+    }
+  }, []);
+
+  useEffect(() => { loadStats(); }, [loadStats]);
+
+  const formatMontant = (v: number) =>
+    v.toLocaleString("fr-FR", { style: "currency", currency: "EUR" });
+
   return (
     <main className="mx-auto max-w-7xl px-6 py-10 flex flex-col gap-10">
 
@@ -21,25 +40,25 @@ export default function Home() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
           label="Factures"
-          value="3"
-          sub="Ce mois-ci"
+          value={stats ? stats.nb_factures : "—"}
+          sub="Total analysé"
           icon={<DocumentIcon className="w-4 h-4" />}
         />
         <StatCard
           label="Bons de livraison"
-          value="4"
-          sub="Ce mois-ci"
+          value={stats ? stats.nb_bons : "—"}
+          sub="Total analysé"
           icon={<TruckIcon className="w-4 h-4" />}
         />
         <StatCard
           label="Montant total"
-          value="8 360,50 €"
-          sub="Factures du mois"
+          value={stats ? formatMontant(stats.montant_total) : "—"}
+          sub="Toutes factures"
           icon={<EuroIcon className="w-4 h-4" />}
         />
         <StatCard
           label="BL non rattachés"
-          value="1"
+          value={stats ? stats.bl_non_rattaches : "—"}
           sub="À vérifier"
           icon={<ChartIcon className="w-4 h-4" />}
         />
@@ -47,18 +66,16 @@ export default function Home() {
 
       {/* Upload */}
       <section className="flex flex-col gap-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-base font-semibold text-neutral-900 dark:text-white">
-              Importer des documents
-            </h2>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-              Factures et bons de livraison — SYSCO, AMBELYS, TERREAZUR
-            </p>
-          </div>
+        <div>
+          <h2 className="text-base font-semibold text-neutral-900 dark:text-white">
+            Importer des documents
+          </h2>
+          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
+            Factures et bons de livraison — SYSCO, AMBELYS, TERREAZUR
+          </p>
         </div>
         <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-6">
-          <UploadZone />
+          <UploadZone onSuccess={loadStats} />
         </div>
       </section>
 
@@ -74,7 +91,9 @@ export default function Home() {
             </div>
             <div>
               <p className="text-sm font-semibold text-neutral-900 dark:text-white">Factures</p>
-              <p className="text-xs text-neutral-400 mt-0.5">Consulter et exporter</p>
+              <p className="text-xs text-neutral-400 mt-0.5">
+                {stats ? `${stats.nb_factures} facture${stats.nb_factures > 1 ? "s" : ""}` : "Consulter et exporter"}
+              </p>
             </div>
           </div>
           <svg className="w-4 h-4 text-neutral-400 group-hover:text-neutral-600 dark:group-hover:text-neutral-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -92,7 +111,11 @@ export default function Home() {
             </div>
             <div>
               <p className="text-sm font-semibold text-neutral-900 dark:text-white">Bons de livraison</p>
-              <p className="text-xs text-neutral-400 mt-0.5">Consulter et exporter</p>
+              <p className="text-xs text-neutral-400 mt-0.5">
+                {stats
+                  ? `${stats.nb_bons} bon${stats.nb_bons > 1 ? "s" : ""}${stats.bl_non_rattaches > 0 ? ` · ${stats.bl_non_rattaches} non rattaché${stats.bl_non_rattaches > 1 ? "s" : ""}` : ""}`
+                  : "Consulter et exporter"}
+              </p>
             </div>
           </div>
           <svg className="w-4 h-4 text-neutral-400 group-hover:text-neutral-600 dark:group-hover:text-neutral-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

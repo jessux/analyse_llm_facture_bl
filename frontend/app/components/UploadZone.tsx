@@ -2,19 +2,24 @@
 
 import { useCallback, useState } from "react";
 import { UploadIcon, SpinnerIcon, CheckIcon, XIcon } from "./Icons";
+import { uploadDocuments, type UploadResult } from "@/lib/api";
 
 type UploadStatus = "idle" | "dragging" | "uploading" | "success" | "error";
 
 interface UploadedFile {
-  name: string;
-  size: number;
+  file: File;
   status: "pending" | "processing" | "done" | "error";
 }
 
-export default function UploadZone() {
+interface UploadZoneProps {
+  onSuccess?: () => void;
+}
+
+export default function UploadZone({ onSuccess }: UploadZoneProps) {
   const [status, setStatus] = useState<UploadStatus>("idle");
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [errorMsg, setErrorMsg] = useState<string>("");
+  const [result, setResult] = useState<UploadResult | null>(null);
 
   const handleFiles = useCallback((incoming: FileList | null) => {
     if (!incoming) return;
@@ -25,13 +30,12 @@ export default function UploadZone() {
       return;
     }
     setErrorMsg("");
-    const newFiles: UploadedFile[] = pdfs.map((f) => ({
-      name: f.name,
-      size: f.size,
-      status: "pending",
-    }));
-    setFiles((prev) => [...prev, ...newFiles]);
+    setResult(null);
     setStatus("idle");
+    setFiles((prev) => [
+      ...prev,
+      ...pdfs.map((f) => ({ file: f, status: "pending" as const })),
+    ]);
   }, []);
 
   const onDrop = useCallback(
@@ -43,13 +47,6 @@ export default function UploadZone() {
     [handleFiles]
   );
 
-  const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setStatus("dragging");
-  };
-
-  const onDragLeave = () => setStatus("idle");
-
   const removeFile = (index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
@@ -60,16 +57,36 @@ export default function UploadZone() {
     return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
   };
 
-  const handleLaunch = () => {
+  const handleLaunch = async () => {
     if (files.length === 0) return;
     setStatus("uploading");
+    setResult(null);
     setFiles((prev) => prev.map((f) => ({ ...f, status: "processing" })));
 
-    // Simulation — à remplacer par l'appel API réel
-    setTimeout(() => {
-      setFiles((prev) => prev.map((f) => ({ ...f, status: "done" })));
+    try {
+      const res = await uploadDocuments(files.map((f) => f.file));
+      setResult(res);
+      const errorFiles = new Set(res.erreurs.map((e) => e.fichier));
+      setFiles((prev) =>
+        prev.map((f) => ({
+          ...f,
+          status: errorFiles.has(f.file.name) ? "error" : "done",
+        }))
+      );
       setStatus("success");
-    }, 2500);
+      onSuccess?.();
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Erreur inconnue.");
+      setStatus("error");
+      setFiles((prev) => prev.map((f) => ({ ...f, status: "error" })));
+    }
+  };
+
+  const handleReset = () => {
+    setFiles([]);
+    setStatus("idle");
+    setErrorMsg("");
+    setResult(null);
   };
 
   return (
@@ -77,8 +94,8 @@ export default function UploadZone() {
       {/* Drop zone */}
       <div
         onDrop={onDrop}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
+        onDragOver={(e) => { e.preventDefault(); setStatus("dragging"); }}
+        onDragLeave={() => setStatus((s) => s === "dragging" ? "idle" : s)}
         className={`relative flex flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed px-8 py-14 text-center transition-colors cursor-pointer
           ${
             status === "dragging"
@@ -112,8 +129,31 @@ export default function UploadZone() {
       </div>
 
       {/* Error */}
-      {status === "error" && (
-        <p className="text-sm text-red-600 dark:text-red-400">{errorMsg}</p>
+      {status === "error" && errorMsg && (
+        <div className="flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 px-4 py-3">
+          <XIcon className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+          <p className="text-sm text-red-700 dark:text-red-400">{errorMsg}</p>
+        </div>
+      )}
+
+      {/* Résultat succès */}
+      {status === "success" && result && (
+        <div className="flex items-start gap-2 rounded-lg bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 px-4 py-3">
+          <CheckIcon className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
+          <div className="text-sm text-emerald-700 dark:text-emerald-400">
+            <span className="font-medium">
+              {result.traites} document{result.traites > 1 ? "s" : ""} traité{result.traites > 1 ? "s" : ""}
+            </span>
+            {" — "}
+            {result.factures} facture{result.factures > 1 ? "s" : ""},
+            {" "}{result.bons} bon{result.bons > 1 ? "s" : ""} de livraison
+            {result.erreurs.length > 0 && (
+              <span className="text-amber-600 dark:text-amber-400">
+                {" · "}{result.erreurs.length} erreur{result.erreurs.length > 1 ? "s" : ""}
+              </span>
+            )}
+          </div>
+        </div>
       )}
 
       {/* File list */}
@@ -123,7 +163,7 @@ export default function UploadZone() {
             {files.length} fichier{files.length > 1 ? "s" : ""} sélectionné{files.length > 1 ? "s" : ""}
           </p>
           <ul className="flex flex-col gap-2">
-            {files.map((file, i) => (
+            {files.map((item, i) => (
               <li
                 key={i}
                 className="flex items-center justify-between gap-4 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 px-4 py-3"
@@ -136,22 +176,22 @@ export default function UploadZone() {
                   </div>
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-neutral-800 dark:text-neutral-200 truncate">
-                      {file.name}
+                      {item.file.name}
                     </p>
-                    <p className="text-xs text-neutral-400">{formatSize(file.size)}</p>
+                    <p className="text-xs text-neutral-400">{formatSize(item.file.size)}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  {file.status === "processing" && (
+                  {item.status === "processing" && (
                     <SpinnerIcon className="w-4 h-4 text-neutral-400 animate-spin" />
                   )}
-                  {file.status === "done" && (
+                  {item.status === "done" && (
                     <CheckIcon className="w-4 h-4 text-emerald-500" />
                   )}
-                  {file.status === "error" && (
+                  {item.status === "error" && (
                     <XIcon className="w-4 h-4 text-red-500" />
                   )}
-                  {file.status === "pending" && (
+                  {item.status === "pending" && (
                     <button
                       onClick={(e) => { e.stopPropagation(); removeFile(i); }}
                       className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
@@ -167,7 +207,7 @@ export default function UploadZone() {
           {/* Actions */}
           <div className="flex items-center justify-between pt-2">
             <button
-              onClick={() => setFiles([])}
+              onClick={handleReset}
               disabled={status === "uploading"}
               className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors disabled:opacity-40"
             >
@@ -181,12 +221,12 @@ export default function UploadZone() {
               {status === "uploading" ? (
                 <>
                   <SpinnerIcon className="w-4 h-4 animate-spin" />
-                  Traitement en cours…
+                  Analyse en cours…
                 </>
               ) : status === "success" ? (
                 <>
                   <CheckIcon className="w-4 h-4" />
-                  Traitement terminé
+                  Analyse terminée
                 </>
               ) : (
                 "Lancer l'analyse"
