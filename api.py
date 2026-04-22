@@ -485,6 +485,7 @@ async def upload_documents(files: list[UploadFile] = File(...)):
         "updated":  {"factures": 0, "bons": 0},
         "rejected": [],
         "errors":   [],
+        "records":  [],  # liste des records extraits avec leur type et action
     }
     tmp_dir = tempfile.mkdtemp()
     loop    = asyncio.get_event_loop()
@@ -537,9 +538,9 @@ async def upload_documents(files: list[UploadFile] = File(...)):
             data["fichier_stocke"] = fname
 
             if doc_type == "bon_livraison":
-                _, action = _upsert_bon(_deserialize_record(data))
+                record, action = _upsert_bon(_deserialize_record(data))
             else:
-                _, action = _upsert_facture(_deserialize_record(data))
+                record, action = _upsert_facture(_deserialize_record(data))
 
             if action == "rejected":
                 results["rejected"].append({
@@ -549,8 +550,18 @@ async def upload_documents(files: list[UploadFile] = File(...)):
                 })
             elif doc_type == "bon_livraison":
                 results[action]["bons"] += 1
+                results["records"].append({
+                    "type":   "bon_livraison",
+                    "action": action,
+                    "data":   _serialize_record(record),
+                })
             else:
                 results[action]["factures"] += 1
+                results["records"].append({
+                    "type":   "facture",
+                    "action": action,
+                    "data":   _serialize_record(record),
+                })
 
         # 4. Reliaison automatique BL ↔ Factures
         _relink_store()
@@ -568,6 +579,7 @@ async def upload_documents(files: list[UploadFile] = File(...)):
             "updated":  results["updated"],
             "rejetes":  results["rejected"],
             "erreurs":  results["errors"],
+            "records":  results["records"],
             "factures": results["created"]["factures"] + results["updated"]["factures"],
             "bons":     results["created"]["bons"]     + results["updated"]["bons"],
         }
@@ -613,6 +625,7 @@ class PatchFacture(BaseModel):
     prix_HT_20pct:        float | None = None
     numero_facture:       str | None = None
     nom_fournisseur:      str | None = None
+    conditions_paiement:  str | None = None
 
 class PatchBon(BaseModel):
     date_livraison:       str | None = None

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
 import {
@@ -68,11 +69,13 @@ function hasError(f: Facture | { verif_tva_5_5: string; verif_tva_10: string; ve
 // ---------------------------------------------------------------------------
 
 export default function TableauFactures() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [data, setData]                   = useState<Facture[]>([]);
   const [fournisseurs, setFournisseurs]   = useState<Fournisseur[]>([]);
   const [loading, setLoading]             = useState(true);
   const [error, setError]                 = useState<string | null>(null);
-  const [search, setSearch]               = useState("");
+  const [search, setSearch]               = useState(() => searchParams.get("facture") ?? searchParams.get("fournisseur") ?? "");
   const [modalFacture, setModalFacture]   = useState<Facture | null>(null);
   const [pdfViewer, setPdfViewer]         = useState<{ url: string; titre: string } | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
@@ -195,7 +198,7 @@ export default function TableauFactures() {
               {/* Ligne 1 : groupes */}
               <tr className="border-b border-neutral-200 dark:border-neutral-800 bg-neutral-100 dark:bg-neutral-900/80">
                 <th colSpan={2} className="px-3 py-2 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider border-r border-neutral-200 dark:border-neutral-700">Document</th>
-                <th colSpan={2} className="px-3 py-2 text-center text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider border-r border-neutral-200 dark:border-neutral-700">Dates</th>
+                <th colSpan={3} className="px-3 py-2 text-center text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider border-r border-neutral-200 dark:border-neutral-700">Dates &amp; paiement</th>
                 <th colSpan={3} className="px-3 py-2 text-center text-xs font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider border-r border-neutral-200 dark:border-neutral-700">Bases HT (éditables)</th>
                 <th className="px-3 py-2 text-center text-xs font-semibold text-blue-700 dark:text-blue-300 uppercase tracking-wider border-r border-neutral-200 dark:border-neutral-700">Tot HT</th>
                 <th colSpan={3} className="px-3 py-2 text-center text-xs font-semibold text-amber-600 dark:text-amber-400 uppercase tracking-wider border-r border-neutral-200 dark:border-neutral-700">TVA calculée (✓/⚠)</th>
@@ -209,7 +212,8 @@ export default function TableauFactures() {
                 <th className="px-3 py-2 text-left font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider sticky left-0 bg-neutral-50 dark:bg-neutral-900 z-10">N° Facture</th>
                 <th className="px-3 py-2 text-left font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider border-r border-neutral-200 dark:border-neutral-700">Fourn.</th>
                 <th className="px-3 py-2 text-left font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Émission</th>
-                <th className="px-3 py-2 text-left font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider border-r border-neutral-200 dark:border-neutral-700">Échéance</th>
+                <th className="px-3 py-2 text-left font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Échéance</th>
+                <th className="px-3 py-2 text-left font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider border-r border-neutral-200 dark:border-neutral-700">Conditions</th>
                 <th className="px-3 py-2 text-right font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider">HT 5,5%</th>
                 <th className="px-3 py-2 text-right font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider">HT 10%</th>
                 <th className="px-3 py-2 text-right font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider border-r border-neutral-200 dark:border-neutral-700">HT 20%</th>
@@ -226,7 +230,7 @@ export default function TableauFactures() {
             <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={16} className="px-4 py-16 text-center text-sm text-neutral-400">
+                <td colSpan={17} className="px-4 py-16 text-center text-sm text-neutral-400">
                     {data.length === 0
                       ? "Aucune facture. Chargez le fichier Suivi Trésorerie ou importez des PDFs."
                       : "Aucun résultat pour cette recherche."}
@@ -280,7 +284,7 @@ export default function TableauFactures() {
                         />
                       </td>
                       {/* Échéance */}
-                      <td className="px-3 py-2 whitespace-nowrap border-r border-neutral-100 dark:border-neutral-800">
+                      <td className="px-3 py-2 whitespace-nowrap">
                         <EditableCell
                           value={f.date_paiement_prevue}
                           type="date"
@@ -289,6 +293,18 @@ export default function TableauFactures() {
                           highlight={isInvalidDate(f.date_paiement_prevue)
                             ? "text-red-600 dark:text-red-400 font-semibold"
                             : "text-neutral-600 dark:text-neutral-400"}
+                        />
+                      </td>
+                      {/* Conditions de paiement */}
+                      <td className="px-3 py-2 border-r border-neutral-100 dark:border-neutral-800 whitespace-nowrap">
+                        <EditableCell
+                          value={f.conditions_paiement ?? null}
+                          type="text"
+                          onSave={save("conditions_paiement")}
+                          renderValue={(v) => v
+                            ? <span className="inline-flex items-center rounded px-1.5 py-0.5 text-xs bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300 font-medium whitespace-nowrap">{v as string}</span>
+                            : <span className="text-neutral-400">—</span>
+                          }
                         />
                       </td>
                       {/* HT 5,5% */}
@@ -347,9 +363,14 @@ export default function TableauFactures() {
                         {f.bons_livraisons?.length > 0 ? (
                           <div className="flex flex-wrap gap-1 max-w-[160px]">
                             {f.bons_livraisons.map((bl) => (
-                              <span key={bl} className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 whitespace-nowrap">
+                              <a
+                                key={bl}
+                                href={`/bons-livraison?bl=${encodeURIComponent(bl)}`}
+                                title={`Voir le BL ${bl}`}
+                                className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:bg-blue-100 dark:hover:bg-blue-900 hover:text-blue-700 dark:hover:text-blue-300 transition-colors whitespace-nowrap cursor-pointer"
+                              >
                                 {bl}
-                              </span>
+                              </a>
                             ))}
                           </div>
                         ) : (

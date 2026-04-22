@@ -27,6 +27,7 @@ export interface Facture {
   verif_tva_10: string;
   verif_tva_20: string;
   bons_livraisons: string[];
+  conditions_paiement?: string | null;
   fichier_source: string;
   fichier_stocke: string | null;
 }
@@ -71,6 +72,11 @@ export interface UploadResult {
   updated: { factures: number; bons: number };
   rejetes: { fichier: string; type: string; raison: string }[];
   erreurs: { fichier: string; erreur: string }[];
+  records: Array<{
+    type: "facture" | "bon_livraison";
+    action: "created" | "updated";
+    data: Facture | BonLivraison;
+  }>;
   // rétrocompat
   factures: number;
   bons: number;
@@ -204,7 +210,7 @@ export async function rattacherFactureaBL(
 export type PatchFacturePayload = Partial<Pick<Facture,
   "date_emission" | "date_paiement_prevue" |
   "prix_HT_5_5pct" | "prix_HT_10pct" | "prix_HT_20pct" |
-  "numero_facture" | "nom_fournisseur"
+  "numero_facture" | "nom_fournisseur" | "conditions_paiement"
 >>;
 
 export type PatchBonPayload = Partial<Pick<BonLivraison,

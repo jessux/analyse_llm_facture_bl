@@ -4,7 +4,7 @@ import Link from "next/link";
 
 export default function BonsLivraisonPage() {
   return (
-    <main className="mx-auto max-w-7xl px-6 py-10 flex flex-col gap-8">
+    <main className="w-full max-w-[1920px] mx-auto px-4 py-8 flex flex-col gap-6">
       {/* Breadcrumb */}
       <nav className="flex items-center gap-2 text-xs text-neutral-400">
         <Link href="/" className="hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors">
@@ -30,7 +30,7 @@ export default function BonsLivraisonPage() {
       </div>
 
       {/* Table */}
-      <div className="bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl p-6">
+      <div className="bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl px-3 py-4">
         <TableauBonsLivraison />
       </div>
     </main>

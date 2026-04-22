@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { UploadIcon, SpinnerIcon, CheckIcon, XIcon } from "./Icons";
-import { uploadDocuments, type UploadResult } from "@/lib/api";
+import { uploadDocuments, patchFacture, patchBon, type UploadResult, type Facture, type BonLivraison } from "@/lib/api";
 
 type UploadStatus = "idle" | "dragging" | "uploading" | "success" | "error";
 

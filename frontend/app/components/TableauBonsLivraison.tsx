@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
 import {
@@ -48,11 +49,12 @@ function hasError(b: BonLivraison) {
 }
 
 export default function TableauBonsLivraison() {
+  const searchParams = useSearchParams();
   const [data, setData] = useState<BonLivraison[]>([]);
   const [fournisseurs, setFournisseurs] = useState<Fournisseur[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => searchParams.get("bl") ?? searchParams.get("fournisseur") ?? "");
   const [modalBon, setModalBon] = useState<BonLivraison | null>(null);
   const [pdfViewer, setPdfViewer] = useState<{ url: string; titre: string } | null>(null);
 
@@ -215,9 +217,13 @@ export default function TableauBonsLivraison() {
                       <td className="px-3 py-2 text-right">{formatMontant(b.montant_ttc, "font-semibold")}</td>
                       <td className="px-3 py-2">
                         {b.numero_facture_rattachee ? (
-                          <span className="inline-flex items-center rounded px-2 py-0.5 text-xs font-mono bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-400">
+                          <a
+                            href={`/factures?facture=${encodeURIComponent(b.numero_facture_rattachee)}`}
+                            title={`Voir la facture ${b.numero_facture_rattachee}`}
+                            className="inline-flex items-center rounded px-2 py-0.5 text-xs font-mono bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900 transition-colors cursor-pointer"
+                          >
                             {b.numero_facture_rattachee}
-                          </span>
+                          </a>
                         ) : (
                           <span className="inline-flex items-center rounded px-2 py-0.5 text-xs bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-400">
                             Non rattaché
