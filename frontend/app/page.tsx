@@ -71,7 +71,7 @@ export default function Home() {
             Importer des documents
           </h2>
           <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-            Factures et bons de livraison — SYSCO, AMBELYS, TERREAZUR
+            Factures et bons de livraison
           </p>
         </div>
         <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-6">

@@ -24,7 +24,7 @@ export default function BonsLivraisonPage() {
             Bons de livraison
           </h1>
           <p className="text-sm text-neutral-500 dark:text-neutral-400">
-            Liste des bons de livraison extraits — SYSCO, AMBELYS, TERREAZUR
+            Liste des bons de livraison extraits
           </p>
         </div>
       </div>
