@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Literal
 from datetime import date
@@ -22,6 +23,10 @@ from main import (
 )
 import pandas as pd
 
+# Dossier de stockage persistant des PDFs importés
+STORAGE_DIR = "storage"
+os.makedirs(STORAGE_DIR, exist_ok=True)
+
 app = FastAPI(
     title="Marjo — API Gestion Factures",
     description="API d'extraction automatique de factures et bons de livraison par IA",
@@ -36,6 +41,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Sert les PDFs stockés via /api/documents/<filename>
+app.mount("/api/documents", StaticFiles(directory=STORAGE_DIR), name="documents")
+
 # Pool de threads dédié au traitement LLM (bloquant)
 _executor = ThreadPoolExecutor(max_workers=4)
 
@@ -44,6 +52,65 @@ _executor = ThreadPoolExecutor(max_workers=4)
 # Clé d'unicité : numero_facture pour les factures, numero_bon_livraison pour les BL
 # ---------------------------------------------------------------------------
 _store: dict[str, dict[str, dict]] = {"factures": {}, "bons": {}}
+
+
+@app.on_event("startup")
+def _startup_load_excel() -> None:
+    """
+    Au démarrage de l'API, recharge le store depuis le fichier Excel
+    s'il existe déjà (persistance entre redémarrages).
+    """
+    if not os.path.exists(OUTPUT_XLSX):
+        print("ℹ️  Aucun fichier Excel trouvé — store vide.")
+        return
+
+    try:
+        xl = pd.ExcelFile(OUTPUT_XLSX)
+
+        # --- Factures ---
+        if "Factures" in xl.sheet_names:
+            df = pd.read_excel(xl, sheet_name="Factures", dtype=str)
+            df = df.where(pd.notna(df), None)   # NaN → None
+            for _, row in df.iterrows():
+                record = _row_to_dict(row)
+                numero = record.get("numero_facture")
+                if numero:
+                    # bons_livraisons est stocké comme chaîne séparée par des virgules
+                    raw_bl = record.get("bons_livraisons")
+                    if isinstance(raw_bl, str) and raw_bl.strip():
+                        record["bons_livraisons"] = [
+                            b.strip() for b in raw_bl.split(",") if b.strip()
+                        ]
+                    else:
+                        record["bons_livraisons"] = []
+                    # Fallback : si fichier_stocke absent, on tente fichier_source
+                    if not record.get("fichier_stocke") and record.get("fichier_source"):
+                        candidate = os.path.join(STORAGE_DIR, record["fichier_source"])
+                        if os.path.exists(candidate):
+                            record["fichier_stocke"] = record["fichier_source"]
+                    _store["factures"][numero] = record
+
+        # --- Bons de livraison ---
+        if "BonsLivraison" in xl.sheet_names:
+            df = pd.read_excel(xl, sheet_name="BonsLivraison", dtype=str)
+            df = df.where(pd.notna(df), None)
+            for _, row in df.iterrows():
+                record = _row_to_dict(row)
+                numero = record.get("numero_bon_livraison")
+                if numero:
+                    # Fallback fichier_stocke
+                    if not record.get("fichier_stocke") and record.get("fichier_source"):
+                        candidate = os.path.join(STORAGE_DIR, record["fichier_source"])
+                        if os.path.exists(candidate):
+                            record["fichier_stocke"] = record["fichier_source"]
+                    _store["bons"][numero] = record
+
+        nb_f = len(_store["factures"])
+        nb_b = len(_store["bons"])
+        print(f"✅ Store rechargé depuis Excel : {nb_f} facture(s), {nb_b} bon(s) de livraison.")
+
+    except Exception as e:
+        print(f"⚠️  Impossible de charger le fichier Excel au démarrage : {e}")
 
 
 def _serialize(obj):
@@ -97,7 +164,7 @@ def health():
 def _process_one_pdf(tmp_path: str, filename: str) -> dict:
     """
     Traitement complet d'un PDF (bloquant — exécuté dans le thread pool).
-    Retourne un dict avec les clés : data, doc_type, action, error.
+    Retourne un dict avec les clés : data, doc_type, error.
     """
     try:
         text     = load_pdf_text(tmp_path)
@@ -136,8 +203,9 @@ async def upload_documents(files: list[UploadFile] = File(...)):
     loop    = asyncio.get_event_loop()
 
     try:
-        # 1. Sauvegarde de tous les fichiers sur disque (async)
-        saved: list[tuple[str, str]] = []  # (tmp_path, filename)
+        # 1. Sauvegarde des fichiers : tmp_dir pour le traitement LLM,
+        #    storage/ pour la persistance définitive
+        saved: list[tuple[str, str, str]] = []  # (tmp_path, storage_path, filename)
         for upload in files:
             fname = upload.filename or ""
             if not fname.lower().endswith(".pdf"):
@@ -146,27 +214,39 @@ async def upload_documents(files: list[UploadFile] = File(...)):
                     "erreur": "Seuls les fichiers PDF sont acceptés.",
                 })
                 continue
+
+            content = await upload.read()
+
+            # Chemin temporaire pour le traitement LLM
             tmp_path = os.path.join(tmp_dir, fname)
-            content  = await upload.read()
             with open(tmp_path, "wb") as f:
                 f.write(content)
-            saved.append((tmp_path, fname))
+
+            # Chemin de stockage définitif (on écrase si même nom = même document)
+            storage_path = os.path.join(STORAGE_DIR, fname)
+            with open(storage_path, "wb") as f:
+                f.write(content)
+
+            saved.append((tmp_path, storage_path, fname))
 
         # 2. Traitement LLM en parallèle dans le thread pool
         futures = [
             loop.run_in_executor(_executor, _process_one_pdf, tmp_path, fname)
-            for tmp_path, fname in saved
+            for tmp_path, _, fname in saved
         ]
         outcomes = await asyncio.gather(*futures)
 
         # 3. Intégration des résultats dans le store
-        for (_, fname), outcome in zip(saved, outcomes):
+        for (_, storage_path, fname), outcome in zip(saved, outcomes):
             if outcome["error"]:
                 results["errors"].append({"fichier": fname, "erreur": outcome["error"]})
                 continue
 
             data     = outcome["data"]
             doc_type = outcome["doc_type"]
+
+            # Stocke le nom du fichier PDF pour pouvoir le servir
+            data["fichier_stocke"] = fname
 
             if doc_type == "bon_livraison":
                 _, action = _upsert_bon(_deserialize_record(data))
@@ -356,6 +436,33 @@ def reset_store():
 # Helpers internes
 # ---------------------------------------------------------------------------
 
+def _row_to_dict(row: "pd.Series") -> dict:
+    """
+    Convertit une ligne de DataFrame en dict propre :
+    - Supprime les NaN / NaT
+    - Convertit les dates pandas en strings ISO (le store travaille en strings sérialisées)
+    - Convertit les floats entiers (ex: 1697.0) en float normal
+    """
+    result = {}
+    for col, val in row.items():
+        if val is None:
+            result[col] = None
+        elif isinstance(val, float) and pd.isna(val):
+            result[col] = None
+        elif hasattr(val, "isoformat"):          # date / datetime / Timestamp
+            result[col] = val.isoformat()[:10]  # garde uniquement YYYY-MM-DD
+        else:
+            # Tente de convertir les montants stockés en string vers float
+            if col in ("montant_total", "prix_HT_5_5pct", "prix_HT_10pct", "prix_HT_20pct"):
+                try:
+                    result[col] = float(val) if val is not None else None
+                except (ValueError, TypeError):
+                    result[col] = None
+            else:
+                result[col] = val
+    return result
+
+
 def _deserialize_record(record: dict) -> dict:
     """Reconvertit les strings ISO en objets date pour les traitements internes."""
     out = dict(record)
@@ -392,8 +499,22 @@ def _relink_store() -> None:
 
 def _regenerate_excel():
     os.makedirs("output", exist_ok=True)
-    df_factures = clean_date_columns(pd.DataFrame(list(_store["factures"].values())))
-    df_bons = clean_date_columns(pd.DataFrame(list(_store["bons"].values())))
+
+    factures_list = list(_store["factures"].values())
+    bons_list     = list(_store["bons"].values())
+
+    # Sérialise bons_livraisons (list) en string CSV pour le Excel
+    # → facilite la relecture au prochain démarrage
+    factures_export = []
+    for f in factures_list:
+        row = dict(f)
+        bl = row.get("bons_livraisons")
+        if isinstance(bl, list):
+            row["bons_livraisons"] = ", ".join(bl)
+        factures_export.append(row)
+
+    df_factures = clean_date_columns(pd.DataFrame(factures_export))
+    df_bons     = clean_date_columns(pd.DataFrame(bons_list))
 
     with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as writer:
         if not df_factures.empty:

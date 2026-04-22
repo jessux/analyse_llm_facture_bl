@@ -3,8 +3,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
-import { fetchFactures, getExcelDownloadUrl, type Facture } from "@/lib/api";
+import { fetchFactures, getExcelDownloadUrl, getPdfUrl, type Facture } from "@/lib/api";
 import ModalRattachement from "./ModalRattachement";
+import ModalPDF from "./ModalPDF";
 
 
 
@@ -33,6 +34,7 @@ export default function TableauFactures() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [modalFacture, setModalFacture] = useState<Facture | null>(null);
+  const [pdfViewer, setPdfViewer]       = useState<{ url: string; titre: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -114,7 +116,7 @@ export default function TableauFactures() {
               <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">HT 10%</th>
               <th className="px-4 py-3 text-right text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">HT 20%</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">BL liés</th>
-              <th className="px-4 py-3 w-10"></th>
+              <th className="px-4 py-3 w-20"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -163,17 +165,33 @@ export default function TableauFactures() {
                     )}
                   </td>
                   <td className="px-3 py-3">
-                    {f.numero_facture && (
-                      <button
-                        onClick={() => setModalFacture(f)}
-                        title="Gérer les rattachements"
-                        className="flex items-center justify-center w-7 h-7 rounded-md text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                        </svg>
-                      </button>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {/* Voir le PDF */}
+                      {f.fichier_stocke && (
+                        <button
+                          onClick={() => setPdfViewer({ url: getPdfUrl(f.fichier_stocke!), titre: f.fichier_stocke! })}
+                          title="Voir le PDF"
+                          className="flex items-center justify-center w-7 h-7 rounded-md text-neutral-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                          </svg>
+                        </button>
+                      )}
+                      {/* Rattachement */}
+                      {f.numero_facture && (
+                        <button
+                          onClick={() => setModalFacture(f)}
+                          title="Gérer les rattachements"
+                          className="flex items-center justify-center w-7 h-7 rounded-md text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))
@@ -198,6 +216,15 @@ export default function TableauFactures() {
           blRattaches={modalFacture.bons_livraisons ?? []}
           onClose={() => setModalFacture(null)}
           onSuccess={load}
+        />
+      )}
+
+      {/* Viewer PDF */}
+      {pdfViewer && (
+        <ModalPDF
+          url={pdfViewer.url}
+          titre={pdfViewer.titre}
+          onClose={() => setPdfViewer(null)}
         />
       )}
     </div>

@@ -6,3 +6,4 @@ output/
 .env
 *.pyc
 __pycache__/
+storage/

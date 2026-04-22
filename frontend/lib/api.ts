@@ -15,6 +15,7 @@ export interface Facture {
   prix_HT_20pct: number | null;
   bons_livraisons: string[];
   fichier_source: string;
+  fichier_stocke: string | null;
 }
 
 export interface BonLivraison {
@@ -24,6 +25,11 @@ export interface BonLivraison {
   montant_total: number | null;
   numero_facture_rattachee: string | null;
   fichier_source: string;
+  fichier_stocke: string | null;
+}
+
+export function getPdfUrl(fichierStocke: string): string {
+  return `${API_BASE}/api/documents/${encodeURIComponent(fichierStocke)}`;
 }
 
 export interface Stats {
