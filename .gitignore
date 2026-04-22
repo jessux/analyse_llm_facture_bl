@@ -3,3 +3,4 @@ factures/
 output/
 .ipynb_checkpoints/
 .ipynb
+.env
