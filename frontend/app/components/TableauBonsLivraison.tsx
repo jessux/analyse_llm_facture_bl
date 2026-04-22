@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
-import { fetchBonsLivraison, getExcelDownloadUrl, getPdfUrl, patchBon, type BonLivraison } from "@/lib/api";
+import { fetchBonsLivraison, getTresorerieDownloadUrl, getPdfUrl, patchBon, type BonLivraison } from "@/lib/api";
 import ModalRattachement from "./ModalRattachement";
 import ModalPDF from "./ModalPDF";
 import EditableCell from "./EditableCell";
@@ -74,7 +74,7 @@ export default function TableauBonsLivraison() {
             ↻
           </button>
           <a
-            href={getExcelDownloadUrl()}
+            href={getTresorerieDownloadUrl()}
             className="flex items-center gap-2 px-4 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
           >
             <DownloadIcon className="w-4 h-4" />

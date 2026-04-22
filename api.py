@@ -73,8 +73,8 @@ def _startup_load_excel() -> None:
     Les BL (col E) sont reconstruits à partir des lignes de factures.
     """
     if not os.path.exists(TRESORERIE_XLSM):
-        print(f"⚠️  Fichier '{TRESORERIE_XLSM}' introuvable — store vide. "
-              "Déposez 'Suivi trésorerie MLC.xlsm' dans output/.")
+        print(f"[WARN] Fichier '{TRESORERIE_XLSM}' introuvable - store vide. "
+              "Deposez 'Suivi tresorerie MLC.xlsm' dans output/.")
         return
 
     try:
@@ -179,10 +179,10 @@ def _startup_load_excel() -> None:
 
         nb_f = len(_store["factures"])
         nb_b = len(_store["bons"])
-        print(f"✅ Store rechargé depuis '{TRESORERIE_XLSM}' : {nb_f} facture(s), {nb_b} bon(s) de livraison.")
+        print(f"[OK] Store rechargé depuis '{TRESORERIE_XLSM}' : {nb_f} facture(s), {nb_b} bon(s) de livraison.")
 
     except Exception as e:
-        print(f"⚠️  Impossible de charger le fichier xlsm au démarrage : {e}")
+        print(f"[WARN] Impossible de charger le fichier xlsm au démarrage : {e}")
 
 
 def _serialize(obj):
@@ -663,7 +663,7 @@ def _regenerate_excel():
     Les lignes des autres fournisseurs sont conservées intactes.
     """
     if not os.path.exists(TRESORERIE_XLSM):
-        print(f"⚠️  _regenerate_excel : fichier '{TRESORERIE_XLSM}' introuvable, persistance ignorée.")
+        print(f"[WARN] _regenerate_excel : fichier '{TRESORERIE_XLSM}' introuvable, persistance ignoree.")
         return
 
     try:
@@ -676,4 +676,4 @@ def _regenerate_excel():
             output_path=TRESORERIE_XLSM,
         )
     except Exception as e:
-        print(f"⚠️  _regenerate_excel : erreur lors de l'écriture dans le xlsm : {e}")
+        print(f"[WARN] _regenerate_excel : erreur lors de l'ecriture dans le xlsm : {e}")
