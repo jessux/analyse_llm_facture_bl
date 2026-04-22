@@ -17,11 +17,12 @@ from main import (
     build_prompt,
     finalize_document_data,
     link_documents,
-    clean_date_columns,
+    write_to_achats_cons,
+    FOURNISSEUR_DISPLAY,
     llm,
-    OUTPUT_XLSX,
 )
-import pandas as pd
+import openpyxl
+from openpyxl import load_workbook
 
 # Dossier de stockage persistant des PDFs importés
 STORAGE_DIR = "storage"
@@ -48,6 +49,14 @@ app.mount("/api/documents", StaticFiles(directory=STORAGE_DIR), name="documents"
 _executor = ThreadPoolExecutor(max_workers=4)
 
 # ---------------------------------------------------------------------------
+# Fichier source de vérité unique
+# ---------------------------------------------------------------------------
+TRESORERIE_XLSM = os.getenv(
+    "TRESORERIE_XLSM_PATH",
+    "output/Suivi trésorerie MLC.xlsm",
+)
+
+# ---------------------------------------------------------------------------
 # Store en mémoire (remplaçable par une BDD)
 # Clé d'unicité : numero_facture pour les factures, numero_bon_livraison pour les BL
 # ---------------------------------------------------------------------------
@@ -57,60 +66,123 @@ _store: dict[str, dict[str, dict]] = {"factures": {}, "bons": {}}
 @app.on_event("startup")
 def _startup_load_excel() -> None:
     """
-    Au démarrage de l'API, recharge le store depuis le fichier Excel
-    s'il existe déjà (persistance entre redémarrages).
+    Au démarrage, recharge le store depuis l'onglet 'Achats Cons' du fichier
+    'Suivi trésorerie MLC.xlsm'. Seules les lignes dont le fournisseur est
+    Sysco / Ambelys / TerreAzur (col C) et dont la colonne W (Commentaires)
+    contient le nom du fichier PDF source sont chargées comme factures.
+    Les BL (col E) sont reconstruits à partir des lignes de factures.
     """
-    if not os.path.exists(OUTPUT_XLSX):
-        print("ℹ️  Aucun fichier Excel trouvé — store vide.")
+    if not os.path.exists(TRESORERIE_XLSM):
+        print(f"⚠️  Fichier '{TRESORERIE_XLSM}' introuvable — store vide. "
+              "Déposez 'Suivi trésorerie MLC.xlsm' dans output/.")
         return
 
     try:
-        xl = pd.ExcelFile(OUTPUT_XLSX)
+        wb = load_workbook(TRESORERIE_XLSM, read_only=True, keep_vba=True)
+        ws = wb["Achats Cons"]
 
-        # --- Factures ---
-        if "Factures" in xl.sheet_names:
-            df = pd.read_excel(xl, sheet_name="Factures", dtype=str)
-            df = df.where(pd.notna(df), None)   # NaN → None
-            for _, row in df.iterrows():
-                record = _row_to_dict(row)
-                numero = record.get("numero_facture")
-                if numero:
-                    # bons_livraisons est stocké comme chaîne séparée par des virgules
-                    raw_bl = record.get("bons_livraisons")
-                    if isinstance(raw_bl, str) and raw_bl.strip():
-                        record["bons_livraisons"] = [
-                            b.strip() for b in raw_bl.split(",") if b.strip()
-                        ]
-                    else:
-                        record["bons_livraisons"] = []
-                    # Fallback : si fichier_stocke absent, on tente fichier_source
-                    if not record.get("fichier_stocke") and record.get("fichier_source"):
-                        candidate = os.path.join(STORAGE_DIR, record["fichier_source"])
-                        if os.path.exists(candidate):
-                            record["fichier_stocke"] = record["fichier_source"]
-                    _store["factures"][numero] = record
+        # Mapping fournisseur affiché → clé interne
+        DISPLAY_TO_KEY = {v.lower(): k for k, v in FOURNISSEUR_DISPLAY.items()}
+        # ex: "sysco" → "SYSCO", "ambelys" → "AMBELYS", "terreazur" → "TERREAZUR"
 
-        # --- Bons de livraison ---
-        if "BonsLivraison" in xl.sheet_names:
-            df = pd.read_excel(xl, sheet_name="BonsLivraison", dtype=str)
-            df = df.where(pd.notna(df), None)
-            for _, row in df.iterrows():
-                record = _row_to_dict(row)
-                numero = record.get("numero_bon_livraison")
-                if numero:
-                    # Fallback fichier_stocke
-                    if not record.get("fichier_stocke") and record.get("fichier_source"):
-                        candidate = os.path.join(STORAGE_DIR, record["fichier_source"])
-                        if os.path.exists(candidate):
-                            record["fichier_stocke"] = record["fichier_source"]
-                    _store["bons"][numero] = record
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            fournisseur_raw = row[2]   # col C
+            if not fournisseur_raw:
+                continue
+            fournisseur_key = DISPLAY_TO_KEY.get(str(fournisseur_raw).strip().lower())
+            if not fournisseur_key:
+                continue  # ligne d'un autre fournisseur, on ignore
+
+            num_facture  = str(row[3]).strip() if row[3] is not None else None
+            num_bl       = str(row[4]).strip() if row[4] is not None else None
+            date_emission = row[5]   # col F — datetime ou None
+            ht_55        = row[8]    # col I
+            ht_10        = row[9]    # col J
+            ht_20        = row[10]   # col K
+            date_paiement = row[18]  # col S
+            commentaire  = str(row[22]).strip() if row[22] is not None else None  # col W
+
+            # Convertir les datetime Excel en date Python
+            def _to_date(v):
+                if v is None:
+                    return None
+                if hasattr(v, "date"):
+                    return v.date()
+                if isinstance(v, date):
+                    return v
+                return None
+
+            def _to_float(v):
+                if v is None:
+                    return None
+                try:
+                    return float(v)
+                except (ValueError, TypeError):
+                    return None
+
+            if not num_facture:
+                continue
+
+            # Construire ou enrichir l'entrée facture
+            if num_facture not in _store["factures"]:
+                record: dict = {
+                    "type_document":       "facture",
+                    "numero_facture":      num_facture,
+                    "nom_fournisseur":     fournisseur_key,
+                    "date_emission":       _to_date(date_emission),
+                    "date_paiement_prevue": _to_date(date_paiement),
+                    "prix_HT_5_5pct":      _to_float(ht_55),
+                    "prix_HT_10pct":       _to_float(ht_10),
+                    "prix_HT_20pct":       _to_float(ht_20),
+                    "montant_total":       None,
+                    "bons_livraisons":     [],
+                    "fichier_source":      commentaire or "",
+                    "fichier_stocke":      None,
+                }
+                # Vérifier si le PDF est en storage
+                if commentaire:
+                    candidate = os.path.join(STORAGE_DIR, commentaire)
+                    if os.path.exists(candidate):
+                        record["fichier_stocke"] = commentaire
+                _store["factures"][num_facture] = record
+            else:
+                # Ligne supplémentaire pour la même facture (plusieurs BL)
+                record = _store["factures"][num_facture]
+
+            # Rattacher le BL à la facture
+            if num_bl and num_bl not in _store["factures"][num_facture]["bons_livraisons"]:
+                _store["factures"][num_facture]["bons_livraisons"].append(num_bl)
+
+            # Créer l'entrée BL si présent
+            if num_bl and num_bl not in _store["bons"]:
+                _store["bons"][num_bl] = {
+                    "type_document":           "bon_livraison",
+                    "numero_bon_livraison":    num_bl,
+                    "nom_fournisseur":         fournisseur_key,
+                    "date_livraison":          _to_date(date_emission),
+                    "montant_total":           None,
+                    "numero_facture_rattachee": num_facture,
+                    "fichier_source":          commentaire or "",
+                    "fichier_stocke":          None,
+                }
+
+        # Sérialiser les dates en strings ISO pour le store
+        for f in _store["factures"].values():
+            for field in ("date_emission", "date_paiement_prevue"):
+                v = f.get(field)
+                if isinstance(v, date) and not isinstance(v, str):
+                    f[field] = v.isoformat()
+        for b in _store["bons"].values():
+            v = b.get("date_livraison")
+            if isinstance(v, date) and not isinstance(v, str):
+                b["date_livraison"] = v.isoformat()
 
         nb_f = len(_store["factures"])
         nb_b = len(_store["bons"])
-        print(f"✅ Store rechargé depuis Excel : {nb_f} facture(s), {nb_b} bon(s) de livraison.")
+        print(f"✅ Store rechargé depuis '{TRESORERIE_XLSM}' : {nb_f} facture(s), {nb_b} bon(s) de livraison.")
 
     except Exception as e:
-        print(f"⚠️  Impossible de charger le fichier Excel au démarrage : {e}")
+        print(f"⚠️  Impossible de charger le fichier xlsm au démarrage : {e}")
 
 
 def _serialize(obj):
@@ -505,11 +577,11 @@ def supprimer_rattachement(numero_facture: str, numero_bl: str):
 def get_stats():
     factures = list(_store["factures"].values())
     bons = list(_store["bons"].values())
-
+    
     montant_total = sum(
-        f.get("montant_total") or 0
+        f.get("TOT HT") or 0
         for f in factures
-        if f.get("montant_total") is not None
+        if f.get("TOT HT") is not None
     )
     bl_non_rattaches = sum(
         1 for b in bons if not b.get("numero_facture_rattachee")
@@ -523,18 +595,22 @@ def get_stats():
     }
 
 
-@app.get("/api/export/excel", summary="Télécharger le fichier Excel")
-def export_excel():
-    if not os.path.exists(OUTPUT_XLSX):
-        raise HTTPException(status_code=404, detail="Aucun fichier Excel disponible. Lancez d'abord une analyse.")
+@app.get("/api/export/tresorerie/download", summary="Télécharger le fichier Suivi Trésorerie MLC.xlsm")
+def download_tresorerie():
+    """Télécharge le fichier Suivi trésorerie MLC.xlsm (source de vérité)."""
+    if not os.path.exists(TRESORERIE_XLSM):
+        raise HTTPException(
+            status_code=404,
+            detail="Fichier 'Suivi trésorerie MLC.xlsm' introuvable dans output/.",
+        )
     return FileResponse(
-        path=OUTPUT_XLSX,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename="factures_et_bl.xlsx",
+        path=TRESORERIE_XLSM,
+        media_type="application/vnd.ms-excel.sheet.macroEnabled.12",
+        filename="Suivi trésorerie MLC.xlsm",
     )
 
 
-@app.delete("/api/reset", summary="Réinitialiser le store")
+@app.delete("/api/reset", summary="Réinitialiser le store en mémoire (ne touche pas au xlsm)")
 def reset_store():
     _store["factures"] = {}
     _store["bons"] = {}
@@ -544,33 +620,6 @@ def reset_store():
 # ---------------------------------------------------------------------------
 # Helpers internes
 # ---------------------------------------------------------------------------
-
-def _row_to_dict(row: "pd.Series") -> dict:
-    """
-    Convertit une ligne de DataFrame en dict propre :
-    - Supprime les NaN / NaT
-    - Convertit les dates pandas en strings ISO (le store travaille en strings sérialisées)
-    - Convertit les floats entiers (ex: 1697.0) en float normal
-    """
-    result = {}
-    for col, val in row.items():
-        if val is None:
-            result[col] = None
-        elif isinstance(val, float) and pd.isna(val):
-            result[col] = None
-        elif hasattr(val, "isoformat"):          # date / datetime / Timestamp
-            result[col] = val.isoformat()[:10]  # garde uniquement YYYY-MM-DD
-        else:
-            # Tente de convertir les montants stockés en string vers float
-            if col in ("montant_total", "prix_HT_5_5pct", "prix_HT_10pct", "prix_HT_20pct"):
-                try:
-                    result[col] = float(val) if val is not None else None
-                except (ValueError, TypeError):
-                    result[col] = None
-            else:
-                result[col] = val
-    return result
-
 
 def _deserialize_record(record: dict) -> dict:
     """Reconvertit les strings ISO en objets date pour les traitements internes."""
@@ -607,30 +656,24 @@ def _relink_store() -> None:
 
 
 def _regenerate_excel():
-    os.makedirs("output", exist_ok=True)
+    """
+    Persiste le store dans l'onglet 'Achats Cons' du fichier
+    'Suivi trésorerie MLC.xlsm' en écrasant uniquement les lignes
+    dont le fournisseur est Sysco / Ambelys / TerreAzur (col C).
+    Les lignes des autres fournisseurs sont conservées intactes.
+    """
+    if not os.path.exists(TRESORERIE_XLSM):
+        print(f"⚠️  _regenerate_excel : fichier '{TRESORERIE_XLSM}' introuvable, persistance ignorée.")
+        return
 
-    factures_list = list(_store["factures"].values())
-    bons_list     = list(_store["bons"].values())
-
-    # Sérialise bons_livraisons (list) en string CSV pour le Excel
-    # → facilite la relecture au prochain démarrage
-    factures_export = []
-    for f in factures_list:
-        row = dict(f)
-        bl = row.get("bons_livraisons")
-        if isinstance(bl, list):
-            row["bons_livraisons"] = ", ".join(bl)
-        factures_export.append(row)
-
-    df_factures = clean_date_columns(pd.DataFrame(factures_export))
-    df_bons     = clean_date_columns(pd.DataFrame(bons_list))
-
-    with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as writer:
-        if not df_factures.empty:
-            df_factures.sort_values(
-                by=["nom_fournisseur", "date_emission"], na_position="last"
-            ).to_excel(writer, sheet_name="Factures", index=False)
-        if not df_bons.empty:
-            df_bons.sort_values(
-                by=["nom_fournisseur", "date_livraison"], na_position="last"
-            ).to_excel(writer, sheet_name="BonsLivraison", index=False)
+    try:
+        factures = list(_store["factures"].values())
+        bons     = list(_store["bons"].values())
+        write_to_achats_cons(
+            factures=factures,
+            bons=bons,
+            template_path=TRESORERIE_XLSM,
+            output_path=TRESORERIE_XLSM,
+        )
+    except Exception as e:
+        print(f"⚠️  _regenerate_excel : erreur lors de l'écriture dans le xlsm : {e}")

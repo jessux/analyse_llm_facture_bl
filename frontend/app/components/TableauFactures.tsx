@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
-import { fetchFactures, getExcelDownloadUrl, getPdfUrl, patchFacture, type Facture } from "@/lib/api";
+import { fetchFactures, exportTresorerie, getTresorerieDownloadUrl, getPdfUrl, patchFacture, type Facture } from "@/lib/api";
 import ModalRattachement from "./ModalRattachement";
 import ModalPDF from "./ModalPDF";
 import EditableCell from "./EditableCell";
@@ -36,6 +36,9 @@ export default function TableauFactures() {
   const [search, setSearch] = useState("");
   const [modalFacture, setModalFacture] = useState<Facture | null>(null);
   const [pdfViewer, setPdfViewer]       = useState<{ url: string; titre: string } | null>(null);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportResult, setExportResult]   = useState<{ lignes: number } | null>(null);
+  const [exportError, setExportError]     = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -79,15 +82,69 @@ export default function TableauFactures() {
           >
             ↻
           </button>
-          <a
-            href={getExcelDownloadUrl()}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
-          >
-            <DownloadIcon className="w-4 h-4" />
-            Exporter Excel
-          </a>
+          {/* Bouton : injection puis téléchargement du Suivi Trésorerie MLC.xlsm */}
+          {!exportResult ? (
+            <button
+              onClick={async () => {
+                setExportLoading(true);
+                setExportError(null);
+                try {
+                  const res = await exportTresorerie();
+                  setExportResult({ lignes: res.lignes_inserees });
+                } catch (err) {
+                  setExportError(err instanceof Error ? err.message : "Erreur lors de l'export.");
+                } finally {
+                  setExportLoading(false);
+                }
+              }}
+              disabled={exportLoading}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-emerald-300 dark:border-emerald-700 text-sm font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-100 dark:hover:bg-emerald-900 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Enregistrer les factures dans l'onglet Achats Cons du Suivi Trésorerie MLC.xlsm"
+            >
+              {exportLoading ? <SpinnerIcon className="w-4 h-4 animate-spin" /> : <DownloadIcon className="w-4 h-4" />}
+              {exportLoading ? "Enregistrement…" : "Enregistrer dans Suivi Trésorerie"}
+            </button>
+          ) : (
+            <a
+              href={getTresorerieDownloadUrl()}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-emerald-300 dark:border-emerald-700 text-sm font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-100 dark:hover:bg-emerald-900 transition-colors"
+              title="Télécharger le Suivi Trésorerie MLC.xlsm mis à jour"
+              onClick={() => setExportResult(null)}
+            >
+              <DownloadIcon className="w-4 h-4" />
+              Télécharger Suivi Trésorerie.xlsm
+            </a>
+          )}
         </div>
       </div>
+
+      {/* Feedback export trésorerie */}
+      {exportResult && (
+        <div className="flex items-center justify-between rounded-lg bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-400">
+          <span>
+            ✅ {exportResult.lignes} facture{exportResult.lignes > 1 ? "s" : ""} injectée{exportResult.lignes > 1 ? "s" : ""} dans l&apos;onglet <strong>Achats Cons</strong> du Suivi Trésorerie MLC.
+          </span>
+          <button
+            onClick={() => setExportResult(null)}
+            className="ml-4 text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-300 transition-colors"
+            title="Fermer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      {exportError && (
+        <div className="flex items-center justify-between rounded-lg bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-700 dark:text-red-400">
+          <span>❌ {exportError}</span>
+          <button
+            onClick={() => setExportError(null)}
+            className="ml-4 text-red-500 hover:text-red-700 dark:hover:text-red-300 transition-colors"
+            title="Fermer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* États loading / error */}
       {loading && (

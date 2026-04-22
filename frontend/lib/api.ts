@@ -90,12 +90,24 @@ export async function fetchStats(): Promise<Stats> {
   return apiFetch<Stats>("/api/stats");
 }
 
-export function getExcelDownloadUrl(): string {
-  return `${API_BASE}/api/export/excel`;
+export function getTresorerieDownloadUrl(): string {
+  return `${API_BASE}/api/export/tresorerie/download`;
 }
 
 export async function resetStore(): Promise<void> {
   await apiFetch("/api/reset", { method: "DELETE" });
+}
+
+export interface ExportTresorerieResult {
+  lignes_inserees: number;
+  fichier: string;
+  message: string;
+}
+
+export async function exportTresorerie(): Promise<ExportTresorerieResult> {
+  return apiFetch<ExportTresorerieResult>("/api/export/tresorerie", {
+    method: "POST",
+  });
 }
 
 export async function rattacherBLaFacture(

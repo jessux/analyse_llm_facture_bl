@@ -6,14 +6,12 @@ from pydantic import BaseModel, Field, SecretStr
 from langchain_openai import ChatOpenAI
 from markitdown import MarkItDown
 from openai import OpenAI
-import pandas as pd
 import os
 import re
 
 load_dotenv()
 
 DOSSIER_FACTURES = "factures"
-OUTPUT_XLSX = "output/factures_et_bl.xlsx"
 
 class DocumentInfo(BaseModel):
     type_document: Literal["facture", "bon_livraison"] | None = None
@@ -397,58 +395,174 @@ def link_documents(factures: list[dict], bons: list[dict]) -> tuple[list[dict], 
 def fetch_files_from_api():
     os.makedirs(DOSSIER_FACTURES, exist_ok=True)
 
-def clean_date_columns(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-    df = df.copy()
-    for col in ["date_emission", "date_livraison", "date_paiement_prevue"]:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
-            df[col] = df[col].where(df[col].notna(), None)
-    return df
+# ---------------------------------------------------------------------------
+# Mapping nom fournisseur app → nom affiché dans Achats Cons
+# ---------------------------------------------------------------------------
+FOURNISSEUR_DISPLAY = {
+    "SYSCO":     "Sysco",
+    "AMBELYS":   "Ambelys",
+    "TERREAZUR": "TerreAzur",
+}
 
-def process_all_documents():
-    os.makedirs(DOSSIER_FACTURES, exist_ok=True)
-    os.makedirs("output", exist_ok=True)
+def write_to_achats_cons(
+    factures: list[dict],
+    bons: list[dict],
+    template_path: str,
+    output_path: str,
+) -> int:
+    """
+    Ouvre le fichier de suivi trésorerie MLC (template_path), **efface d'abord
+    toutes les lignes dont le fournisseur (col C) est Sysco / Ambelys / TerreAzur**,
+    puis réinsère les factures du store à la suite des lignes des autres fournisseurs.
+    Sauvegarde dans output_path (peut être identique à template_path).
 
-    factures, bons = [], []
+    Colonnes remplies (valeurs saisies) :
+      C  = Fournisseur
+      D  = N° Facture
+      E  = N° BL
+      F  = Date (date_emission de la facture)
+      I  = HT 5,5 %
+      J  = HT 10 %
+      K  = HT 20 %
+      S  = Date paiement (date_paiement_prevue)
+      W  = Commentaires (nom du fichier source)
 
-    for file in os.listdir(DOSSIER_FACTURES):
-        if not file.lower().endswith(".pdf"):
-            continue
+    Colonnes en formule (reproduites à l'identique) :
+      A, B, G, H, L, M, N, O, P, Q, R, T, U, V, X, Y
 
-        path = os.path.join(DOSSIER_FACTURES, file)
-        text = load_pdf_text(path)
-        doc_type = classify_document(text, file)
-        prompt = build_prompt(doc_type, text)
+    Retourne le nombre de lignes insérées.
+    """
+    import openpyxl
+    from openpyxl import load_workbook
+    from datetime import date as _date
 
-        result = llm.invoke(prompt)
-        data = result.model_dump() if hasattr(result, "model_dump") else dict(result)
-        data = finalize_document_data(data, text=text, filename=file, predicted_type=doc_type)
+    # Fournisseurs gérés par l'appli (valeurs affichées dans col C)
+    MLC_FOURNISSEURS = {v.lower() for v in FOURNISSEUR_DISPLAY.values()}
+    # ex: {"sysco", "ambelys", "terreazur"}
 
-        if doc_type == "bon_livraison":
-            bons.append(data)
+    # Construire un index facture → liste de BL rattachés
+    bl_index: dict[str, list[str]] = {}
+    for bon in bons:
+        fac_num = bon.get("numero_facture_rattachee")
+        bl_num  = bon.get("numero_bon_livraison")
+        if fac_num and bl_num:
+            bl_index.setdefault(str(fac_num), [])
+            if bl_num not in bl_index[str(fac_num)]:
+                bl_index[str(fac_num)].append(bl_num)
+
+    wb = load_workbook(template_path, keep_vba=True)
+    ws = wb["Achats Cons"]
+
+    # ------------------------------------------------------------------
+    # 1. Identifier et effacer les lignes MLC existantes (col C = nos fournisseurs)
+    #    On efface les cellules saisies (C-K, S, W) et les formules (A, B, G, H, L-R, T-Y)
+    #    pour remettre la ligne à blanc, sans supprimer la ligne physiquement
+    #    (évite de décaler les formules des autres onglets qui référencent Achats Cons).
+    # ------------------------------------------------------------------
+    mlc_rows: list[int] = []
+    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+        fournisseur_cell = row[2]  # col C (index 0-based → col 3 Excel)
+        if fournisseur_cell and str(fournisseur_cell).strip().lower() in MLC_FOURNISSEURS:
+            mlc_rows.append(row_idx)
+
+    for r in mlc_rows:
+        for c in range(1, 26):   # colonnes A à Y
+            ws.cell(r, c).value = None
+
+    # ------------------------------------------------------------------
+    # 2. Déterminer la première ligne disponible pour l'insertion
+    #    = première ligne entièrement vide après l'en-tête
+    # ------------------------------------------------------------------
+    first_empty = 2
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if any(v is not None for v in row):
+            first_empty += 1
         else:
-            factures.append(data)
+            break
 
-    factures, bons = link_documents(factures, bons)
+    # ------------------------------------------------------------------
+    # 3. Insérer les factures du store
+    #    Une ligne par facture (si plusieurs BL → on met le premier en col E,
+    #    les suivants sont portés par les BL du store mais pas dupliqués ici)
+    # ------------------------------------------------------------------
+    def _to_date(v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                return _date.fromisoformat(v)
+            except ValueError:
+                return None
+        if hasattr(v, "date"):
+            return v.date()
+        if isinstance(v, _date):
+            return v
+        return None
 
-    df_factures = clean_date_columns(pd.DataFrame(factures))
-    df_bons = clean_date_columns(pd.DataFrame(bons))
+    def _to_float(v):
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
 
-    with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as writer:
-        if not df_factures.empty:
-            df_factures.sort_values(by=["nom_fournisseur", "date_emission"], na_position="last").to_excel(
-                writer, sheet_name="Factures", index=False
-            )
-        if not df_bons.empty:
-            df_bons.sort_values(by=["nom_fournisseur", "date_livraison"], na_position="last").to_excel(
-                writer, sheet_name="BonsLivraison", index=False
-            )
+    inserted = 0
+    for facture in factures:
+        fournisseur_raw = facture.get("nom_fournisseur") or ""
+        fournisseur     = FOURNISSEUR_DISPLAY.get(fournisseur_raw.upper(), fournisseur_raw)
+        num_facture     = facture.get("numero_facture")
+        bls             = bl_index.get(str(num_facture), []) if num_facture else []
+        num_bl          = bls[0] if bls else None
+        date_emission   = _to_date(facture.get("date_emission"))
+        ht_55           = _to_float(facture.get("prix_HT_5_5pct"))
+        ht_10           = _to_float(facture.get("prix_HT_10pct"))
+        ht_20           = _to_float(facture.get("prix_HT_20pct"))
+        date_paiement   = _to_date(facture.get("date_paiement_prevue"))
+        commentaire     = facture.get("fichier_source") or facture.get("fichier_stocke") or ""
 
-    print(f"✅ {len(factures)} factures et {len(bons)} bons de livraison traités.")
-    print(f"📊 Excel généré : {OUTPUT_XLSX}")
-    return df_factures, df_bons
+        r = first_empty + inserted  # numéro de ligne Excel (1-based)
+
+        # --- Formules ---
+        ws.cell(r, 1).value  = f'=IF(AND(B{r}>=TDB!$B$6,B{r}<=TDB!$D$6),"Oui","")'
+        ws.cell(r, 2).value  = f'=IF(G{r}<10,H{r}&0&G{r},H{r}&G{r})'
+        ws.cell(r, 7).value  = f'=IF(F{r}="","",MONTH(F{r}))'
+        ws.cell(r, 8).value  = f'=IF(F{r}="","",YEAR(F{r}))'
+        ws.cell(r, 12).value = f'=IF(AND(I{r}="",J{r}="",K{r}=""),"",SUM(I{r}:K{r}))'
+        ws.cell(r, 13).value = f'=IF(I{r}="","",I{r}*0.055)'
+        ws.cell(r, 14).value = f'=IF(J{r}="","",J{r}*0.1)'
+        ws.cell(r, 15).value = f'=IF(K{r}="","",K{r}*0.2)'
+        ws.cell(r, 16).value = f'=IF(AND(M{r}="",N{r}="",O{r}=""),"",SUM(M{r}:O{r}))'
+        ws.cell(r, 17).value = f'=IF(AND(L{r}="",P{r}=""),"",L{r}+P{r})'
+        ws.cell(r, 18).value = f'=IFERROR(INDEX(Inputs!$C:$C,MATCH(C{r},Inputs!$B:$B,0)),"")'
+        ws.cell(r, 20).value = f'=IF(I{r}="","",IF(M{r}=0,"",IF(ROUND(M{r}/I{r},3)=0.055,"OK","Erreur")))'
+        ws.cell(r, 21).value = f'=IF(J{r}="","",IF(N{r}=0,"",IF(ROUND(N{r}/J{r},3)=0.1,"OK","Erreur")))'
+        ws.cell(r, 22).value = f'=IF(K{r}="","",IF(O{r}=0,"",IF(ROUND(O{r}/K{r},3)=0.2,"OK","Erreur")))'
+        ws.cell(r, 24).value = f'=S{r}&"-"&C{r}&"-"&TEXT(Q{r},"0.00")'
+        ws.cell(r, 25).value = f'=IFERROR(INDEX(Inputs!$D:$D,MATCH(\'Achats Cons\'!C{r},Inputs!$B:$B,0)),"")'
+
+        # --- Valeurs saisies ---
+        ws.cell(r, 3).value  = fournisseur
+        ws.cell(r, 4).value  = num_facture
+        ws.cell(r, 5).value  = num_bl
+        ws.cell(r, 6).value  = date_emission
+        ws.cell(r, 9).value  = ht_55
+        ws.cell(r, 10).value = ht_10
+        ws.cell(r, 11).value = ht_20
+        ws.cell(r, 19).value = date_paiement
+        ws.cell(r, 23).value = commentaire or None
+
+        # Format date pour les colonnes F et S
+        if date_emission:
+            ws.cell(r, 6).number_format = "DD/MM/YYYY"
+        if date_paiement:
+            ws.cell(r, 19).number_format = "DD/MM/YYYY"
+
+        inserted += 1
+
+    wb.save(output_path)
+    return inserted
+
 
 if __name__ == "__main__":
     print("Démarrage du traitement des documents...")
