@@ -603,7 +603,13 @@ function RecapModal({ result, files, onClose }: RecapModalProps) {
           </div>
 
           {/* Footer */}
-          <div className="px-6 py-4 border-t border-neutral-100 dark:border-neutral-800 flex justify-end">
+          <div className="px-6 py-4 border-t border-neutral-100 dark:border-neutral-800 flex justify-end gap-3">
+            <button
+              onClick={onClose}
+              className="px-5 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-200 text-sm font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+            >
+              Annuler
+            </button>
             <button
               onClick={onClose}
               className="px-5 py-2 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-sm font-medium hover:bg-neutral-700 dark:hover:bg-neutral-200 transition-colors"

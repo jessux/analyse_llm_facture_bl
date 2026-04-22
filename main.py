@@ -27,6 +27,7 @@ class DocumentInfo(BaseModel):
     montant_total: float | None = None
     nom_fournisseur: str | None = None
     bons_livraisons: list[str] = Field(default_factory=list)
+    conditions_paiement: str | None = None
     prix_HT_5_5pct: float | None = None
     prix_HT_10pct: float | None = None
     prix_HT_20pct: float | None = None
@@ -113,6 +114,67 @@ def extract_date_from_filename(filename: str) -> date | None:
     except ValueError:
         return None
 
+def parse_date_string(value: str | None) -> date | None:
+    if not value:
+        return None
+    value = value.strip()
+    m = re.fullmatch(r"(\d{2})[/-](\d{2})[/-](\d{4})", value)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            return None
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", value)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    return None
+
+def is_supported_date(value: date | None) -> bool:
+    return isinstance(value, date) and 2020 <= value.year <= 2100
+
+def extract_labeled_date(text: str, patterns: list[str]) -> date | None:
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        parsed = parse_date_string(match.group(1))
+        if is_supported_date(parsed):
+            return parsed
+    return None
+
+def choose_best_date(
+    raw_value: date | str | None,
+    *,
+    text: str,
+    filename: str,
+    label_patterns: list[str],
+    fallback: date | None = None,
+    prefer_last_candidate: bool = False,
+) -> date | None:
+    current = raw_value if isinstance(raw_value, date) else parse_date_string(raw_value)
+    candidates = extract_date_candidates(text)
+    explicit = extract_labeled_date(text, label_patterns)
+    file_date = extract_date_from_filename(filename)
+
+    if explicit:
+        return explicit
+    if is_supported_date(current):
+        return current
+    if isinstance(current, date):
+        for candidate in candidates:
+            if candidate.day == current.day and candidate.month == current.month:
+                return candidate
+    if fallback and is_supported_date(fallback):
+        return fallback
+    if file_date and is_supported_date(file_date):
+        return file_date
+    if not candidates:
+        return None
+    return candidates[-1] if prefer_last_candidate else candidates[0]
+
 def infer_due_date(emission: date | None, text: str) -> date | None:
     if not emission:
         return None
@@ -126,6 +188,19 @@ def infer_due_date(emission: date | None, text: str) -> date | None:
         return eom + timedelta(days=delay)
     return emission + timedelta(days=delay)
 
+def reconcile_due_date_with_terms(
+    due: date | None,
+    *,
+    emission: date | None,
+    text: str,
+) -> date | None:
+    inferred_due = infer_due_date(emission, text)
+    if not inferred_due:
+        return due
+    if not due:
+        return inferred_due
+    return due if due == inferred_due else inferred_due
+
 def clean_bl_number(value: str) -> str:
     v = str(value).upper().strip()
     v = re.sub(r"^BL\s*N[°O]?\s*", "", v)
@@ -133,6 +208,12 @@ def clean_bl_number(value: str) -> str:
     v = re.sub(r"^AR\s*CDE\s*N[°O]?\s*", "", v)
     v = re.sub(r"\s+", "", v)
     return v
+
+def clean_invoice_number(value: str) -> str:
+    v = str(value).strip().upper()
+    v = re.sub(r"^(FACTURE|FAC)\s*N[°O]?\s*", "", v)
+    v = re.sub(r"\s+", "", v)
+    return v.strip("-:/")
 
 def normalize_bl_list(values: list[str]) -> list[str]:
     cleaned, seen = [], set()
@@ -176,6 +257,66 @@ def normalize_supplier_name(
     if "TERREAZUR" in raw_upper or "TERRE AZUR" in raw_upper:
         return "TERREAZUR"
     return None
+
+def infer_supplier_name(
+    text: str,
+    filename: str,
+    fournisseur_patterns: dict[str, list[str]] | None = None,
+) -> str | None:
+    haystack = f"{filename}\n{text}".lower()
+    if fournisseur_patterns:
+        for fournisseur_id, patterns in fournisseur_patterns.items():
+            for pattern in patterns:
+                if pattern.lower() in haystack:
+                    return fournisseur_id
+        return None
+    if "ambelys" in haystack:
+        return "AMBELYS"
+    if "sysco" in haystack:
+        return "SYSCO"
+    if "terre azur" in haystack or "terreazur" in haystack:
+        return "TERREAZUR"
+    return None
+
+def extract_invoice_number(text: str, filename: str) -> str | None:
+    patterns = [
+        r"\bnum[eé]ro\s+de\s+facture\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-\/]*)",
+        r"\bfacture\s*n[°o]?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-\/]*)",
+        r"\bfacture\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-\/]*)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return clean_invoice_number(match.group(1))
+
+    fname = os.path.splitext(os.path.basename(filename))[0].upper()
+    match = re.search(r"(?:^|[-_\s])((?:FAC[-_\/]?|F)\d{4,})\b", fname)
+    if match:
+        return clean_invoice_number(match.group(1))
+    return None
+
+def extract_payment_terms(text: str) -> str | None:
+    patterns = [
+        r"conditions?\s+de\s+r[eè]glement\s*[:\-]?\s*([^\n\r]+)",
+        r"modalit[eé]s?\s+de\s+paiement\s*[:\-]?\s*([^\n\r]+)",
+        r"\b(payable\s+[^\n\r]{0,80})",
+        r"\b(\d{1,3}\s*jours?(?:\s+fin\s+de\s+mois)?)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            value = re.sub(r"\s+", " ", match.group(1)).strip(" .:-")
+            if value:
+                return value
+    return None
+
+def extract_referenced_bl_numbers(text: str) -> list[str]:
+    pattern = (
+        r"\b(?:bon\s+de\s+livraison|bl|ar\s*cde)"
+        r"\s*n[°o]?\s*[:\-]?\s*([A-Z0-9\-\/]+)"
+    )
+    found = [match.group(1).upper() for match in re.finditer(pattern, text, re.IGNORECASE)]
+    return normalize_bl_list(found)
 
 def classify_document(text: str, filename: str) -> str:
     """
@@ -328,19 +469,34 @@ def classify_document(text: str, filename: str) -> str:
 
 def normalize_invoice_dates(data: dict, text: str, filename: str) -> dict:
     candidates = extract_date_candidates(text)
-    file_date = extract_date_from_filename(filename)
 
-    emission = data.get("date_emission")
-    if not isinstance(emission, date):
-        emission = file_date or (candidates[0] if candidates else None)
+    emission = choose_best_date(
+        data.get("date_emission"),
+        text=text,
+        filename=filename,
+        label_patterns=[
+            r"date\s+de\s+facture\s*[:\-]?\s*(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})",
+            r"date\s+d[’']?[eé]mission\s*[:\-]?\s*(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})",
+            r"facture\s+du\s+(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})",
+        ],
+    )
     data["date_emission"] = emission
 
-    due = data.get("date_paiement_prevue")
-    if not isinstance(due, date):
-        due = infer_due_date(emission, text)
-        if due is None:
-            later = [d for d in candidates if emission and d >= emission]
-            due = later[-1] if later else None
+    due = choose_best_date(
+        data.get("date_paiement_prevue"),
+        text=text,
+        filename=filename,
+        label_patterns=[
+            r"[eé]ch[eé]ance\s*[:\-]?\s*(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})",
+            r"date\s+de\s+paiement\s*[:\-]?\s*(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})",
+        ],
+        fallback=infer_due_date(emission, text),
+        prefer_last_candidate=True,
+    )
+    if due is None:
+        later = [d for d in candidates if emission and d >= emission]
+        due = later[-1] if later else None
+    due = reconcile_due_date_with_terms(due, emission=emission, text=text)
     data["date_paiement_prevue"] = due
     return data
 
@@ -359,9 +515,26 @@ def finalize_document_data(
         data.get("nom_fournisseur"),
         fournisseur_patterns=fournisseur_patterns,
     )
+    if data["nom_fournisseur"] is None:
+        data["nom_fournisseur"] = infer_supplier_name(
+            text,
+            filename,
+            fournisseur_patterns=fournisseur_patterns,
+        )
 
     if predicted_type == "facture":
+        if not data.get("numero_facture"):
+            data["numero_facture"] = extract_invoice_number(text, filename)
+
         data = normalize_invoice_dates(data, text=text, filename=filename)
+
+        if not data.get("conditions_paiement"):
+            data["conditions_paiement"] = extract_payment_terms(text)
+
+        merged_bls = normalize_bl_list(
+            [*(data.get("bons_livraisons") or []), *extract_referenced_bl_numbers(text)]
+        )
+        data["bons_livraisons"] = merged_bls
 
     if predicted_type == "bon_livraison":
         if not data.get("numero_bon_livraison"):
@@ -376,12 +549,16 @@ def finalize_document_data(
                     data["numero_bon_livraison"] = clean_bl_number(m.group(1))
                     break
 
-        if not data.get("date_livraison"):
-            candidates = extract_date_candidates(text)
-            for d in candidates:
-                if d.year >= 2020:
-                    data["date_livraison"] = d
-                    break
+        data["date_livraison"] = choose_best_date(
+            data.get("date_livraison"),
+            text=text,
+            filename=filename,
+            label_patterns=[
+                r"date\s+de\s+livraison\s*[:\-]?\s*(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})",
+                r"[àa]\s+livrer\s+le\s+(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})",
+                r"livraison\s+du\s+(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})",
+            ],
+        )
 
         data["bons_livraisons"] = normalize_bl_list(data.get("bons_livraisons", []))
 
@@ -406,6 +583,7 @@ Règles:
 - Si une valeur est absente, retourne null
 - numero_bon_livraison = numéro principal du BL
 - date_livraison = date de livraison du BL (entre 2020 et 2100 sinon null)
+- n'invente jamais une année différente de celle écrite dans le document
 - prix_HT_5_5pct, prix_HT_10pct, prix_HT_20pct = montants HT de CE bon de livraison selon le taux de TVA applicable
 - normalise les montants en nombres décimaux
 - nom_fournisseur doit être exactement une des valeurs suivantes : {fournisseurs_str}
@@ -420,9 +598,12 @@ Retourne un JSON conforme au schéma.
 Règles:
 - type_document = facture
 - Si une valeur est absente, retourne null
+- numero_facture = numéro principal de la facture
 - date_emission et date_paiement_prevue entre 2020 et 2100 sinon null
 - si la date de paiement n'est pas explicitement présente, utilise les conditions de paiement
+- conditions_paiement = libellé exact des conditions de règlement si présent
 - si des bons de livraison sont référencés, renseigne bons_livraisons avec leurs numéros
+- n'invente jamais une année différente de celle écrite dans le document
 - prix_HT_5_5pct, prix_HT_10pct, prix_HT_20pct = montants HT totaux de la facture par taux de TVA
 - normalise les montants en nombres décimaux
 - nom_fournisseur doit être exactement une des valeurs suivantes : {fournisseurs_str}
