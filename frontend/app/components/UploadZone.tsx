@@ -273,126 +273,410 @@ export default function UploadZone({ onSuccess }: UploadZoneProps) {
       )}
 
       {showRecapModal && result && (
-        <>
-          <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={closeRecapModal} />
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="w-full max-w-3xl max-h-[88vh] overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-2xl flex flex-col">
-              <div className="flex items-start justify-between gap-4 px-6 py-5 border-b border-neutral-100 dark:border-neutral-800">
-                <div>
-                  <h2 className="text-base font-semibold text-neutral-900 dark:text-white">
-                    Récapitulatif de l'import
-                  </h2>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-                    Vérifiez les documents importés, rejetés et les éventuelles erreurs.
-                  </p>
-                </div>
-                <button
-                  onClick={closeRecapModal}
-                  className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
-                >
-                  <XIcon className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="p-6 overflow-y-auto flex flex-col gap-4">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 p-3">
-                    <p className="text-xs text-emerald-700 dark:text-emerald-300">Traités</p>
-                    <p className="text-xl font-semibold text-emerald-700 dark:text-emerald-300">{result.traites}</p>
-                  </div>
-                  <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 p-3">
-                    <p className="text-xs text-neutral-600 dark:text-neutral-300">Nouveaux</p>
-                    <p className="text-xl font-semibold text-neutral-900 dark:text-white">{result.created.factures + result.created.bons}</p>
-                  </div>
-                  <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 p-3">
-                    <p className="text-xs text-blue-700 dark:text-blue-300">Mis à jour</p>
-                    <p className="text-xl font-semibold text-blue-700 dark:text-blue-300">{result.updated.factures + result.updated.bons}</p>
-                  </div>
-                  <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950 p-3">
-                    <p className="text-xs text-red-700 dark:text-red-300">Erreurs</p>
-                    <p className="text-xl font-semibold text-red-700 dark:text-red-300">{result.erreurs.length}</p>
-                  </div>
-                </div>
-
-                {result.rejetes.length > 0 && (
-                  <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-4 py-3">
-                    <p className="text-xs font-semibold text-amber-700 dark:text-amber-300 mb-2">
-                      Documents rejetés ({result.rejetes.length})
-                    </p>
-                    <ul className="space-y-1">
-                      {result.rejetes.map((r, i) => (
-                        <li key={i} className="text-xs text-amber-700 dark:text-amber-300 flex items-center gap-2">
-                          <span className="font-mono truncate">{r.fichier}</span>
-                          <span className="opacity-60">·</span>
-                          <span>{r.raison}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {result.erreurs.length > 0 && (
-                  <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950 px-4 py-3">
-                    <p className="text-xs font-semibold text-red-700 dark:text-red-300 mb-2">
-                      Erreurs techniques ({result.erreurs.length})
-                    </p>
-                    <ul className="space-y-1">
-                      {result.erreurs.map((e, i) => (
-                        <li key={i} className="text-xs text-red-700 dark:text-red-300 flex items-center gap-2">
-                          <span className="font-mono truncate">{e.fichier}</span>
-                          <span className="opacity-60">·</span>
-                          <span>{e.erreur}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                <div className="rounded-lg border border-neutral-200 dark:border-neutral-800">
-                  <div className="px-4 py-2 border-b border-neutral-200 dark:border-neutral-800 text-xs font-semibold text-neutral-600 dark:text-neutral-300">
-                    Détail des fichiers sélectionnés
-                  </div>
-                  <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
-                    {files.map((item, i) => (
-                      <li key={i} className="px-4 py-2 text-xs flex items-center justify-between gap-3">
-                        <span className="font-mono truncate text-neutral-700 dark:text-neutral-200">{item.file.name}</span>
-                        <span
-                          className={`px-2 py-0.5 rounded-md font-medium ${
-                            item.status === "done"
-                              ? "bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300"
-                              : item.status === "rejected"
-                              ? "bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300"
-                              : item.status === "error"
-                              ? "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300"
-                              : "bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300"
-                          }`}
-                        >
-                          {item.status === "done"
-                            ? "Importé"
-                            : item.status === "rejected"
-                            ? "Rejeté"
-                            : item.status === "error"
-                            ? "Erreur"
-                            : item.status}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-
-              <div className="px-6 py-4 border-t border-neutral-100 dark:border-neutral-800 flex justify-end">
-                <button
-                  onClick={closeRecapModal}
-                  className="px-4 py-2 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-sm font-medium hover:bg-neutral-700 dark:hover:bg-neutral-200 transition-colors"
-                >
-                  Fermer
-                </button>
-              </div>
-            </div>
-          </div>
-        </>
+        <RecapModal
+          result={result}
+          files={files}
+          onClose={closeRecapModal}
+        />
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Composant RecapModal
+// ---------------------------------------------------------------------------
+
+interface RecapModalProps {
+  result: UploadResult;
+  files: { file: File; status: string }[];
+  onClose: () => void;
+}
+
+type EditState = Record<string, Record<string, string>>;
+
+function fmtMontant(v: number | null | undefined) {
+  if (v == null) return "—";
+  return v.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function RecapModal({ result, files, onClose }: RecapModalProps) {
+  // editState[recordKey][field] = valeur temporaire en cours d'édition
+  const [editState, setEditState] = useState<EditState>({});
+  // savingState[recordKey][field] = true quand un PATCH est en cours
+  const [savingState, setSavingState] = useState<Record<string, Record<string, boolean>>>({});
+  // localRecords : copie locale des records pour refléter les sauvegardes sans recharger
+  const [localRecords, setLocalRecords] = useState(result.records ?? []);
+
+  const recordKey = (r: typeof localRecords[0]) =>
+    r.type === "facture"
+      ? (r.data as Facture).numero_facture ?? String(Math.random())
+      : (r.data as BonLivraison).numero_bon_livraison ?? String(Math.random());
+
+  const getEdit = (key: string, field: string, fallback: string) =>
+    editState[key]?.[field] ?? fallback;
+
+  const setField = (key: string, field: string, value: string) =>
+    setEditState((prev) => ({ ...prev, [key]: { ...(prev[key] ?? {}), [field]: value } }));
+
+  const clearField = (key: string, field: string) =>
+    setEditState((prev) => {
+      const copy = { ...(prev[key] ?? {}) };
+      delete copy[field];
+      return { ...prev, [key]: copy };
+    });
+
+  const saveField = async (
+    rec: typeof localRecords[0],
+    field: string,
+    value: string
+  ) => {
+    const key = recordKey(rec);
+    setSavingState((p) => ({ ...p, [key]: { ...(p[key] ?? {}), [field]: true } }));
+    try {
+      const isNum = field.startsWith("prix_") || field === "montant_ttc" || field === "montant_total";
+      const payload: Record<string, string | number | null> = {
+        [field]: isNum ? (value === "" ? null : parseFloat(value)) : (value === "" ? null : value),
+      };
+      if (rec.type === "facture") {
+        const updated = await patchFacture((rec.data as Facture).numero_facture!, payload as never);
+        setLocalRecords((prev) =>
+          prev.map((r) => (recordKey(r) === key ? { ...r, data: updated } : r))
+        );
+      } else {
+        const updated = await patchBon((rec.data as BonLivraison).numero_bon_livraison!, payload as never);
+        setLocalRecords((prev) =>
+          prev.map((r) => (recordKey(r) === key ? { ...r, data: updated } : r))
+        );
+      }
+      clearField(key, field);
+    } catch {
+      // laisse l'état d'édition en place si erreur
+    } finally {
+      setSavingState((p) => ({ ...p, [key]: { ...(p[key] ?? {}), [field]: false } }));
+    }
+  };
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-4xl max-h-[92vh] overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-2xl flex flex-col">
+
+          {/* Header */}
+          <div className="flex items-start justify-between gap-4 px-6 py-5 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <h2 className="text-base font-semibold text-neutral-900 dark:text-white">
+                Récapitulatif de l&apos;import
+              </h2>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
+                Vérifiez et corrigez les données extraites avant de confirmer.
+              </p>
+            </div>
+            <button onClick={onClose} className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors">
+              <XIcon className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Body */}
+          <div className="p-6 overflow-y-auto flex flex-col gap-5">
+
+            {/* Compteurs */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 p-3">
+                <p className="text-xs text-emerald-700 dark:text-emerald-300">Traités</p>
+                <p className="text-xl font-semibold text-emerald-700 dark:text-emerald-300">{result.traites}</p>
+              </div>
+              <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 p-3">
+                <p className="text-xs text-neutral-600 dark:text-neutral-300">Nouveaux</p>
+                <p className="text-xl font-semibold text-neutral-900 dark:text-white">{result.created.factures + result.created.bons}</p>
+              </div>
+              <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 p-3">
+                <p className="text-xs text-blue-700 dark:text-blue-300">Mis à jour</p>
+                <p className="text-xl font-semibold text-blue-700 dark:text-blue-300">{result.updated.factures + result.updated.bons}</p>
+              </div>
+              <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950 p-3">
+                <p className="text-xs text-red-700 dark:text-red-300">Erreurs</p>
+                <p className="text-xl font-semibold text-red-700 dark:text-red-300">{result.erreurs.length}</p>
+              </div>
+            </div>
+
+            {/* Rejets */}
+            {result.rejetes.length > 0 && (
+              <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-4 py-3">
+                <p className="text-xs font-semibold text-amber-700 dark:text-amber-300 mb-2">Documents rejetés ({result.rejetes.length})</p>
+                <ul className="space-y-1">
+                  {result.rejetes.map((r, i) => (
+                    <li key={i} className="text-xs text-amber-700 dark:text-amber-300 flex items-center gap-2">
+                      <span className="font-mono truncate">{r.fichier}</span>
+                      <span className="opacity-60">·</span>
+                      <span>{r.raison}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Erreurs */}
+            {result.erreurs.length > 0 && (
+              <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950 px-4 py-3">
+                <p className="text-xs font-semibold text-red-700 dark:text-red-300 mb-2">Erreurs ({result.erreurs.length})</p>
+                <ul className="space-y-1">
+                  {result.erreurs.map((e, i) => (
+                    <li key={i} className="text-xs text-red-700 dark:text-red-300 flex items-center gap-2">
+                      <span className="font-mono truncate">{e.fichier}</span>
+                      <span className="opacity-60">·</span>
+                      <span>{e.erreur}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Cartes des données extraites */}
+            {localRecords.length > 0 && (
+              <div className="flex flex-col gap-3">
+                <p className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
+                  Données extraites — cliquez sur un champ pour le corriger
+                </p>
+                {localRecords.map((rec, idx) => {
+                  const key = recordKey(rec);
+                  const isFacture = rec.type === "facture";
+                  const f = rec.data as Facture;
+                  const b = rec.data as BonLivraison;
+
+                  return (
+                    <div
+                      key={idx}
+                      className={`rounded-xl border px-5 py-4 flex flex-col gap-3 ${
+                        rec.action === "created"
+                          ? "border-emerald-200 dark:border-emerald-800 bg-emerald-50/40 dark:bg-emerald-950/20"
+                          : "border-blue-200 dark:border-blue-800 bg-blue-50/40 dark:bg-blue-950/20"
+                      }`}
+                    >
+                      {/* En-tête de carte */}
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ${
+                          isFacture
+                            ? "bg-neutral-100 text-neutral-700 ring-neutral-300 dark:bg-neutral-800 dark:text-neutral-200 dark:ring-neutral-600"
+                            : "bg-indigo-50 text-indigo-700 ring-indigo-200 dark:bg-indigo-950 dark:text-indigo-300 dark:ring-indigo-800"
+                        }`}>
+                          {isFacture ? "Facture" : "Bon de livraison"}
+                        </span>
+                        <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${
+                          rec.action === "created"
+                            ? "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:ring-emerald-800"
+                            : "bg-blue-50 text-blue-700 ring-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:ring-blue-800"
+                        }`}>
+                          {rec.action === "created" ? "Nouveau" : "Mis à jour"}
+                        </span>
+                        <span className="text-xs font-mono text-neutral-500 dark:text-neutral-400 truncate">
+                          {isFacture ? f.fichier_source : b.fichier_source}
+                        </span>
+                      </div>
+
+                      {/* Grille des champs */}
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-3">
+                        {isFacture ? (
+                          <>
+                            <RecapField
+                              label="N° Facture"
+                              field="numero_facture"
+                              value={f.numero_facture ?? ""}
+                              editVal={getEdit(key, "numero_facture", f.numero_facture ?? "")}
+                              saving={savingState[key]?.numero_facture}
+                              onEdit={(v) => setField(key, "numero_facture", v)}
+                              onSave={(v) => saveField(rec, "numero_facture", v)}
+                            />
+                            <RecapField
+                              label="Fournisseur"
+                              field="nom_fournisseur"
+                              value={f.nom_fournisseur ?? ""}
+                              editVal={getEdit(key, "nom_fournisseur", f.nom_fournisseur ?? "")}
+                              saving={savingState[key]?.nom_fournisseur}
+                              onEdit={(v) => setField(key, "nom_fournisseur", v)}
+                              onSave={(v) => saveField(rec, "nom_fournisseur", v)}
+                            />
+                            <RecapField
+                              label="Date émission"
+                              field="date_emission"
+                              value={f.date_emission ?? ""}
+                              editVal={getEdit(key, "date_emission", f.date_emission ?? "")}
+                              saving={savingState[key]?.date_emission}
+                              inputType="date"
+                              onEdit={(v) => setField(key, "date_emission", v)}
+                              onSave={(v) => saveField(rec, "date_emission", v)}
+                            />
+                            <RecapField
+                              label="Échéance"
+                              field="date_paiement_prevue"
+                              value={f.date_paiement_prevue ?? ""}
+                              editVal={getEdit(key, "date_paiement_prevue", f.date_paiement_prevue ?? "")}
+                              saving={savingState[key]?.date_paiement_prevue}
+                              inputType="date"
+                              onEdit={(v) => setField(key, "date_paiement_prevue", v)}
+                              onSave={(v) => saveField(rec, "date_paiement_prevue", v)}
+                            />
+                            <RecapField
+                              label="Conditions paiement"
+                              field="conditions_paiement"
+                              value={f.conditions_paiement ?? ""}
+                              editVal={getEdit(key, "conditions_paiement", f.conditions_paiement ?? "")}
+                              saving={savingState[key]?.conditions_paiement}
+                              onEdit={(v) => setField(key, "conditions_paiement", v)}
+                              onSave={(v) => saveField(rec, "conditions_paiement", v)}
+                            />
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-xs text-neutral-500 dark:text-neutral-400 font-medium">Montant TTC</span>
+                              <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-300 font-mono">
+                                {fmtMontant(f.montant_ttc)} €
+                              </span>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <RecapField
+                              label="N° BL"
+                              field="numero_bon_livraison"
+                              value={b.numero_bon_livraison ?? ""}
+                              editVal={getEdit(key, "numero_bon_livraison", b.numero_bon_livraison ?? "")}
+                              saving={savingState[key]?.numero_bon_livraison}
+                              onEdit={(v) => setField(key, "numero_bon_livraison", v)}
+                              onSave={(v) => saveField(rec, "numero_bon_livraison", v)}
+                            />
+                            <RecapField
+                              label="Fournisseur"
+                              field="nom_fournisseur"
+                              value={b.nom_fournisseur ?? ""}
+                              editVal={getEdit(key, "nom_fournisseur", b.nom_fournisseur ?? "")}
+                              saving={savingState[key]?.nom_fournisseur}
+                              onEdit={(v) => setField(key, "nom_fournisseur", v)}
+                              onSave={(v) => saveField(rec, "nom_fournisseur", v)}
+                            />
+                            <RecapField
+                              label="Date livraison"
+                              field="date_livraison"
+                              value={b.date_livraison ?? ""}
+                              editVal={getEdit(key, "date_livraison", b.date_livraison ?? "")}
+                              saving={savingState[key]?.date_livraison}
+                              inputType="date"
+                              onEdit={(v) => setField(key, "date_livraison", v)}
+                              onSave={(v) => saveField(rec, "date_livraison", v)}
+                            />
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-xs text-neutral-500 dark:text-neutral-400 font-medium">Montant TTC</span>
+                              <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-300 font-mono">
+                                {fmtMontant(b.montant_ttc)} €
+                              </span>
+                            </div>
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-xs text-neutral-500 dark:text-neutral-400 font-medium">Facture rattachée</span>
+                              <span className="text-sm font-mono text-neutral-700 dark:text-neutral-200">
+                                {b.numero_facture_rattachee ?? <span className="text-neutral-400 font-sans">—</span>}
+                              </span>
+                            </div>
+                          </>
+                        )}
+                      </div>
+
+                      {/* Ligne TVA résumée */}
+                      {isFacture && (
+                        <div className="flex flex-wrap gap-3 pt-1 border-t border-neutral-200/60 dark:border-neutral-700/40">
+                          <TvaChip label="HT 5,5%" ht={f.prix_HT_5_5pct} tva={f.tva_5_5pct} verif={f.verif_tva_5_5} />
+                          <TvaChip label="HT 10%" ht={f.prix_HT_10pct} tva={f.tva_10pct} verif={f.verif_tva_10} />
+                          <TvaChip label="HT 20%" ht={f.prix_HT_20pct} tva={f.tva_20pct} verif={f.verif_tva_20} />
+                          <div className="flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+                            <span className="font-medium">Tot HT :</span>
+                            <span className="font-mono">{fmtMontant(f.montant_total)}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+                            <span className="font-medium">Tot TVA :</span>
+                            <span className="font-mono">{fmtMontant(f.total_tva)}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 py-4 border-t border-neutral-100 dark:border-neutral-800 flex justify-end">
+            <button
+              onClick={onClose}
+              className="px-5 py-2 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-sm font-medium hover:bg-neutral-700 dark:hover:bg-neutral-200 transition-colors"
+            >
+              Confirmer &amp; fermer
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// RecapField : champ éditable inline dans la modale
+// ---------------------------------------------------------------------------
+
+interface RecapFieldProps {
+  label: string;
+  field: string;
+  value: string;
+  editVal: string;
+  saving?: boolean;
+  inputType?: string;
+  onEdit: (v: string) => void;
+  onSave: (v: string) => void;
+}
+
+function RecapField({ label, value, editVal, saving, inputType = "text", onEdit, onSave }: RecapFieldProps) {
+  const isDirty = editVal !== value;
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-xs text-neutral-500 dark:text-neutral-400 font-medium">{label}</span>
+      <div className="flex items-center gap-1">
+        <input
+          type={inputType}
+          value={editVal}
+          onChange={(e) => onEdit(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onSave(editVal);
+            if (e.key === "Escape") onEdit(value);
+          }}
+          onBlur={() => { if (isDirty) onSave(editVal); }}
+          className={`w-full rounded-md border px-2 py-1 text-xs font-mono transition-colors focus:outline-none focus:ring-1 ${
+            isDirty
+              ? "border-amber-300 dark:border-amber-600 bg-amber-50 dark:bg-amber-950/40 focus:ring-amber-400 text-amber-900 dark:text-amber-200"
+              : "border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 focus:ring-neutral-400 text-neutral-800 dark:text-neutral-200"
+          }`}
+        />
+        {saving && <SpinnerIcon className="w-3.5 h-3.5 text-neutral-400 animate-spin flex-shrink-0" />}
+        {!saving && isDirty && (
+          <span className="w-3.5 h-3.5 rounded-full bg-amber-400 flex-shrink-0" title="Modification non sauvegardée" />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TvaChip
+// ---------------------------------------------------------------------------
+
+function TvaChip({ label, ht, tva, verif }: { label: string; ht: number | null; tva: number | null; verif: string }) {
+  if (ht === null && tva === null) return null;
+  const ok = verif === "OK";
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${ok ? "bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300" : "bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300"}`}>
+      <span className="font-medium">{label}</span>
+      <span className="font-mono">{fmtMontant(ht)}</span>
+      <span className="opacity-60">/</span>
+      <span className="font-mono">{fmtMontant(tva)}</span>
+      <span>{ok ? "✓" : "⚠"}</span>
+    </span>
   );
 }
