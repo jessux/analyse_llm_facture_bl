@@ -91,3 +91,35 @@ export function getExcelDownloadUrl(): string {
 export async function resetStore(): Promise<void> {
   await apiFetch("/api/reset", { method: "DELETE" });
 }
+
+export async function rattacherBLaFacture(
+  numeroFacture: string,
+  numeroBL: string
+): Promise<{ facture: Facture; bon: BonLivraison }> {
+  return apiFetch(`/api/factures/${encodeURIComponent(numeroFacture)}/rattacher`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ numero_bon_livraison: numeroBL }),
+  });
+}
+
+export async function rattacherFactureaBL(
+  numeroBL: string,
+  numeroFacture: string
+): Promise<{ bon: BonLivraison; facture: Facture }> {
+  return apiFetch(`/api/bons-livraison/${encodeURIComponent(numeroBL)}/rattacher`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ numero_facture: numeroFacture }),
+  });
+}
+
+export async function supprimerRattachement(
+  numeroFacture: string,
+  numeroBL: string
+): Promise<void> {
+  await apiFetch(
+    `/api/factures/${encodeURIComponent(numeroFacture)}/rattacher/${encodeURIComponent(numeroBL)}`,
+    { method: "DELETE" }
+  );
+}
