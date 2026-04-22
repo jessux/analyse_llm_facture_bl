@@ -120,6 +120,39 @@ export async function rattacherFactureaBL(
   });
 }
 
+export type PatchFacturePayload = Partial<Pick<Facture,
+  "date_emission" | "date_paiement_prevue" |
+  "montant_total" | "prix_HT_5_5pct" | "prix_HT_10pct" | "prix_HT_20pct" |
+  "numero_facture" | "nom_fournisseur"
+>>;
+
+export type PatchBonPayload = Partial<Pick<BonLivraison,
+  "date_livraison" | "montant_total" |
+  "numero_bon_livraison" | "nom_fournisseur"
+>>;
+
+export async function patchFacture(
+  numeroFacture: string,
+  payload: PatchFacturePayload
+): Promise<Facture> {
+  return apiFetch<Facture>(`/api/factures/${encodeURIComponent(numeroFacture)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function patchBon(
+  numeroBL: string,
+  payload: PatchBonPayload
+): Promise<BonLivraison> {
+  return apiFetch<BonLivraison>(`/api/bons-livraison/${encodeURIComponent(numeroBL)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function supprimerRattachement(
   numeroFacture: string,
   numeroBL: string

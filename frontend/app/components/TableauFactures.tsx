@@ -3,9 +3,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
-import { fetchFactures, getExcelDownloadUrl, getPdfUrl, type Facture } from "@/lib/api";
+import { fetchFactures, getExcelDownloadUrl, getPdfUrl, patchFacture, type Facture } from "@/lib/api";
 import ModalRattachement from "./ModalRattachement";
 import ModalPDF from "./ModalPDF";
+import EditableCell from "./EditableCell";
 
 
 
@@ -129,28 +130,101 @@ export default function TableauFactures() {
                 </td>
               </tr>
             ) : (
-              filtered.map((f, i) => (
+              filtered.map((f, i) => {
+                const save = (field: string) => async (val: string) => {
+                  const payload: Record<string, string | number | null> = {};
+                  payload[field] = field.includes("montant") || field.includes("prix")
+                    ? (val === "" ? null : parseFloat(val))
+                    : (val === "" ? null : val);
+                  await patchFacture(f.numero_facture!, payload as never);
+                  await load();
+                };
+                return (
                 <tr
                   key={i}
                   className="bg-white dark:bg-neutral-950 hover:bg-neutral-50 dark:hover:bg-neutral-900 transition-colors"
                 >
+                  {/* N° Facture */}
                   <td className="px-4 py-3 font-medium text-neutral-800 dark:text-neutral-200 whitespace-nowrap">
-                    {f.numero_facture ?? <span className="text-neutral-400">—</span>}
+                    <EditableCell
+                      value={f.numero_facture}
+                      type="text"
+                      onSave={save("numero_facture")}
+                      renderValue={(v) => v ?? <span className="text-neutral-400">—</span>}
+                    />
                   </td>
-                  <td className="px-4 py-3">{supplierBadge(f.nom_fournisseur)}</td>
-                  <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400 whitespace-nowrap">{formatDate(f.date_emission)}</td>
+                  {/* Fournisseur */}
+                  <td className="px-4 py-3">
+                    <EditableCell
+                      value={f.nom_fournisseur}
+                      type="select"
+                      options={["SYSCO", "AMBELYS", "TERREAZUR"]}
+                      onSave={save("nom_fournisseur")}
+                      renderValue={(v) => supplierBadge(v as string | null)}
+                    />
+                  </td>
+                  {/* Date émission */}
                   <td className="px-4 py-3 whitespace-nowrap">
-                    <span className={isOverdue(f.date_paiement_prevue)
-                      ? "text-red-600 dark:text-red-400 font-medium"
-                      : "text-neutral-600 dark:text-neutral-400"
-                    }>
-                      {formatDate(f.date_paiement_prevue)}
-                    </span>
+                    <EditableCell
+                      value={f.date_emission}
+                      type="date"
+                      onSave={save("date_emission")}
+                      renderValue={(v) => formatDate(v as string | null)}
+                      className="text-neutral-600 dark:text-neutral-400"
+                    />
                   </td>
-                  <td className="px-4 py-3 text-right text-neutral-800 dark:text-neutral-200">{formatMontant(f.montant_total)}</td>
-                  <td className="px-4 py-3 text-right text-neutral-600 dark:text-neutral-400">{formatMontant(f.prix_HT_5_5pct)}</td>
-                  <td className="px-4 py-3 text-right text-neutral-600 dark:text-neutral-400">{formatMontant(f.prix_HT_10pct)}</td>
-                  <td className="px-4 py-3 text-right text-neutral-600 dark:text-neutral-400">{formatMontant(f.prix_HT_20pct)}</td>
+                  {/* Échéance */}
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <EditableCell
+                      value={f.date_paiement_prevue}
+                      type="date"
+                      onSave={save("date_paiement_prevue")}
+                      renderValue={(v) => formatDate(v as string | null)}
+                      highlight={isOverdue(f.date_paiement_prevue)
+                        ? "text-red-600 dark:text-red-400 font-medium"
+                        : "text-neutral-600 dark:text-neutral-400"}
+                    />
+                  </td>
+                  {/* Montant TTC */}
+                  <td className="px-4 py-3 text-right">
+                    <EditableCell
+                      value={f.montant_total}
+                      type="number"
+                      onSave={save("montant_total")}
+                      renderValue={(v) => formatMontant(v as number | null)}
+                      className="text-neutral-800 dark:text-neutral-200"
+                    />
+                  </td>
+                  {/* HT 5,5% */}
+                  <td className="px-4 py-3 text-right">
+                    <EditableCell
+                      value={f.prix_HT_5_5pct}
+                      type="number"
+                      onSave={save("prix_HT_5_5pct")}
+                      renderValue={(v) => formatMontant(v as number | null)}
+                      className="text-neutral-600 dark:text-neutral-400"
+                    />
+                  </td>
+                  {/* HT 10% */}
+                  <td className="px-4 py-3 text-right">
+                    <EditableCell
+                      value={f.prix_HT_10pct}
+                      type="number"
+                      onSave={save("prix_HT_10pct")}
+                      renderValue={(v) => formatMontant(v as number | null)}
+                      className="text-neutral-600 dark:text-neutral-400"
+                    />
+                  </td>
+                  {/* HT 20% */}
+                  <td className="px-4 py-3 text-right">
+                    <EditableCell
+                      value={f.prix_HT_20pct}
+                      type="number"
+                      onSave={save("prix_HT_20pct")}
+                      renderValue={(v) => formatMontant(v as number | null)}
+                      className="text-neutral-600 dark:text-neutral-400"
+                    />
+                  </td>
                   <td className="px-4 py-3">
                     {f.bons_livraisons?.length > 0 ? (
                       <div className="flex flex-wrap gap-1">
@@ -194,7 +268,8 @@ export default function TableauFactures() {
                     </div>
                   </td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>

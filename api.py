@@ -304,6 +304,115 @@ class RattachementBL(BaseModel):
 class RattachementFacture(BaseModel):
     numero_facture: str
 
+# Champs éditables par type de document
+FACTURE_EDITABLE_FIELDS = {
+    "date_emission", "date_paiement_prevue",
+    "montant_total", "prix_HT_5_5pct", "prix_HT_10pct", "prix_HT_20pct",
+    "numero_facture", "nom_fournisseur",
+}
+BON_EDITABLE_FIELDS = {
+    "date_livraison", "montant_total",
+    "numero_bon_livraison", "nom_fournisseur",
+}
+
+class PatchFacture(BaseModel):
+    date_emission:        str | None = None
+    date_paiement_prevue: str | None = None
+    montant_total:        float | None = None
+    prix_HT_5_5pct:       float | None = None
+    prix_HT_10pct:        float | None = None
+    prix_HT_20pct:        float | None = None
+    numero_facture:       str | None = None
+    nom_fournisseur:      str | None = None
+
+class PatchBon(BaseModel):
+    date_livraison:  str | None = None
+    montant_total:   float | None = None
+    numero_bon_livraison: str | None = None
+    nom_fournisseur: str | None = None
+
+
+@app.patch("/api/factures/{numero_facture}", summary="Modifier les champs d'une facture")
+def patch_facture(numero_facture: str, body: PatchFacture):
+    """
+    Met à jour les champs éditables d'une facture.
+    Seuls les champs non-None dans le body sont modifiés.
+    Si numero_facture change, la clé du store est mise à jour.
+    """
+    facture = _store["factures"].get(numero_facture)
+    if not facture:
+        raise HTTPException(status_code=404, detail=f"Facture '{numero_facture}' introuvable.")
+
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+
+    # Validation des dates
+    for date_field in ("date_emission", "date_paiement_prevue"):
+        if date_field in updates:
+            try:
+                date.fromisoformat(updates[date_field])
+            except ValueError:
+                raise HTTPException(status_code=422, detail=f"Format de date invalide pour '{date_field}' (attendu : YYYY-MM-DD).")
+
+    # Validation fournisseur
+    if "nom_fournisseur" in updates and updates["nom_fournisseur"] not in ("SYSCO", "AMBELYS", "TERREAZUR"):
+        raise HTTPException(status_code=422, detail="nom_fournisseur doit être SYSCO, AMBELYS ou TERREAZUR.")
+
+    nouveau_numero = updates.pop("numero_facture", None)
+    facture.update(updates)
+
+    # Changement de numéro : réindexation
+    if nouveau_numero and nouveau_numero != numero_facture:
+        if nouveau_numero in _store["factures"]:
+            raise HTTPException(status_code=409, detail=f"La facture '{nouveau_numero}' existe déjà.")
+        facture["numero_facture"] = nouveau_numero
+        del _store["factures"][numero_facture]
+        _store["factures"][nouveau_numero] = facture
+    else:
+        _store["factures"][numero_facture] = facture
+
+    _regenerate_excel()
+    return _serialize_record(facture)
+
+
+@app.patch("/api/bons-livraison/{numero_bl}", summary="Modifier les champs d'un bon de livraison")
+def patch_bon(numero_bl: str, body: PatchBon):
+    """
+    Met à jour les champs éditables d'un bon de livraison.
+    Seuls les champs non-None dans le body sont modifiés.
+    """
+    bon = _store["bons"].get(numero_bl)
+    if not bon:
+        raise HTTPException(status_code=404, detail=f"Bon de livraison '{numero_bl}' introuvable.")
+
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+
+    # Validation date
+    if "date_livraison" in updates:
+        try:
+            date.fromisoformat(updates["date_livraison"])
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Format de date invalide pour 'date_livraison' (attendu : YYYY-MM-DD).")
+
+    # Validation fournisseur
+    if "nom_fournisseur" in updates and updates["nom_fournisseur"] not in ("SYSCO", "AMBELYS", "TERREAZUR"):
+        raise HTTPException(status_code=422, detail="nom_fournisseur doit être SYSCO, AMBELYS ou TERREAZUR.")
+
+    nouveau_numero = updates.pop("numero_bon_livraison", None)
+    bon.update(updates)
+
+    # Changement de numéro : réindexation
+    if nouveau_numero and nouveau_numero != numero_bl:
+        if nouveau_numero in _store["bons"]:
+            raise HTTPException(status_code=409, detail=f"Le bon '{nouveau_numero}' existe déjà.")
+        bon["numero_bon_livraison"] = nouveau_numero
+        del _store["bons"][numero_bl]
+        _store["bons"][nouveau_numero] = bon
+    else:
+        _store["bons"][numero_bl] = bon
+
+    _regenerate_excel()
+    return _serialize_record(bon)
+
 
 @app.patch("/api/factures/{numero_facture}/rattacher", summary="Rattacher un BL à une facture")
 def rattacher_bl_a_facture(numero_facture: str, body: RattachementBL):

@@ -3,9 +3,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
-import { fetchBonsLivraison, getExcelDownloadUrl, getPdfUrl, type BonLivraison } from "@/lib/api";
+import { fetchBonsLivraison, getExcelDownloadUrl, getPdfUrl, patchBon, type BonLivraison } from "@/lib/api";
 import ModalRattachement from "./ModalRattachement";
 import ModalPDF from "./ModalPDF";
+import EditableCell from "./EditableCell";
 
 function formatDate(d: string | null) {
   if (!d) return <span className="text-neutral-400">—</span>;
@@ -120,17 +121,59 @@ export default function TableauBonsLivraison() {
                   </td>
                 </tr>
               ) : (
-                filtered.map((b, i) => (
+                filtered.map((b, i) => {
+                  const save = (field: string) => async (val: string) => {
+                    const payload: Record<string, string | number | null> = {};
+                    payload[field] = field === "montant_total"
+                      ? (val === "" ? null : parseFloat(val))
+                      : (val === "" ? null : val);
+                    await patchBon(b.numero_bon_livraison!, payload as never);
+                    await load();
+                  };
+                  return (
                   <tr
                     key={i}
                     className="bg-white dark:bg-neutral-950 hover:bg-neutral-50 dark:hover:bg-neutral-900 transition-colors"
                   >
+                    {/* N° BL */}
                     <td className="px-4 py-3 font-medium font-mono text-neutral-800 dark:text-neutral-200 whitespace-nowrap">
-                      {b.numero_bon_livraison ?? <span className="text-neutral-400 font-sans">—</span>}
+                      <EditableCell
+                        value={b.numero_bon_livraison}
+                        type="text"
+                        onSave={save("numero_bon_livraison")}
+                        renderValue={(v) => v ?? <span className="text-neutral-400 font-sans">—</span>}
+                      />
                     </td>
-                    <td className="px-4 py-3">{supplierBadge(b.nom_fournisseur)}</td>
-                    <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400 whitespace-nowrap">{formatDate(b.date_livraison)}</td>
-                    <td className="px-4 py-3 text-right text-neutral-800 dark:text-neutral-200">{formatMontant(b.montant_total)}</td>
+                    {/* Fournisseur */}
+                    <td className="px-4 py-3">
+                      <EditableCell
+                        value={b.nom_fournisseur}
+                        type="select"
+                        options={["SYSCO", "AMBELYS", "TERREAZUR"]}
+                        onSave={save("nom_fournisseur")}
+                        renderValue={(v) => supplierBadge(v as string | null)}
+                      />
+                    </td>
+                    {/* Date livraison */}
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <EditableCell
+                        value={b.date_livraison}
+                        type="date"
+                        onSave={save("date_livraison")}
+                        renderValue={(v) => formatDate(v as string | null)}
+                        className="text-neutral-600 dark:text-neutral-400"
+                      />
+                    </td>
+                    {/* Montant */}
+                    <td className="px-4 py-3 text-right">
+                      <EditableCell
+                        value={b.montant_total}
+                        type="number"
+                        onSave={save("montant_total")}
+                        renderValue={(v) => formatMontant(v as number | null)}
+                        className="text-neutral-800 dark:text-neutral-200"
+                      />
+                    </td>
                     <td className="px-4 py-3">
                       {b.numero_facture_rattachee ? (
                         <span className="inline-flex items-center rounded px-2 py-0.5 text-xs font-mono bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-400 ring-1 ring-inset ring-blue-200 dark:ring-blue-800">
@@ -175,7 +218,8 @@ export default function TableauBonsLivraison() {
                       </div>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>
