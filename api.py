@@ -11,6 +11,8 @@ import tempfile
 import shutil
 import os
 import re
+import zipfile
+import threading
 
 from main import (
     load_pdf_text,
@@ -48,6 +50,9 @@ app.mount("/api/documents", StaticFiles(directory=STORAGE_DIR), name="documents"
 
 # Pool de threads dédié au traitement LLM (bloquant)
 _executor = ThreadPoolExecutor(max_workers=4)
+_regen_lock = threading.Lock()
+_regen_pending = False
+_regen_running = False
 
 # ---------------------------------------------------------------------------
 # Fichier source de vérité unique
@@ -56,6 +61,30 @@ TRESORERIE_XLSM = os.getenv(
     "TRESORERIE_XLSM_PATH",
     "output/Suivi trésorerie MLC.xlsm",
 )
+TRESORERIE_XLSM_FALLBACK = "output/Suivi trésorerie MLC - Copie.xlsm"
+
+
+def _is_valid_xlsm(path: str) -> bool:
+    if not os.path.exists(path):
+        return False
+    try:
+        with zipfile.ZipFile(path, "r") as zf:
+            names = zf.namelist()
+            return "[Content_Types].xml" in names and zf.testzip() is None
+    except (zipfile.BadZipFile, OSError):
+        return False
+
+
+def _resolve_tresorerie_path() -> str:
+    if _is_valid_xlsm(TRESORERIE_XLSM):
+        return TRESORERIE_XLSM
+    if _is_valid_xlsm(TRESORERIE_XLSM_FALLBACK):
+        print(
+            f"[WARN] Fichier principal xlsm invalide: '{TRESORERIE_XLSM}'. "
+            f"Utilisation du fallback '{TRESORERIE_XLSM_FALLBACK}'."
+        )
+        return TRESORERIE_XLSM_FALLBACK
+    return TRESORERIE_XLSM
 
 # ---------------------------------------------------------------------------
 # Store en mémoire (remplaçable par une BDD)
@@ -123,6 +152,9 @@ def _startup_load_excel() -> None:
 
     Les factures multi-BL sont agrégées par numero_facture pour les montants HT.
     """
+    global TRESORERIE_XLSM
+    TRESORERIE_XLSM = _resolve_tresorerie_path()
+
     if not os.path.exists(TRESORERIE_XLSM):
         print(f"[WARN] Fichier '{TRESORERIE_XLSM}' introuvable - store vide. "
               "Deposez 'Suivi tresorerie MLC.xlsm' dans output/.")
@@ -439,6 +471,12 @@ async def upload_documents(files: list[UploadFile] = File(...)):
     - Unicité : numero_facture / numero_bon_livraison.
     - Numéro null → rejeté. Numéro existant → mis à jour (upsert).
     """
+    if llm is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Service IA non configure (variables APIM_OPENAI_* manquantes).",
+        )
+
     if not files:
         raise HTTPException(status_code=400, detail="Aucun fichier fourni.")
 
@@ -518,7 +556,7 @@ async def upload_documents(files: list[UploadFile] = File(...)):
         _relink_store()
 
         # 5. Régénération Excel
-        _regenerate_excel()
+        _schedule_regenerate_excel()
 
         nb_traites = (
             results["created"]["factures"] + results["created"]["bons"]
@@ -625,7 +663,7 @@ def patch_facture(numero_facture: str, body: PatchFacture):
     else:
         _store["factures"][numero_facture] = facture
 
-    _regenerate_excel()
+    _schedule_regenerate_excel()
     return _serialize_record(facture)
 
 
@@ -666,7 +704,7 @@ def patch_bon(numero_bl: str, body: PatchBon):
     else:
         _store["bons"][numero_bl] = bon
 
-    _regenerate_excel()
+    _schedule_regenerate_excel()
     return _serialize_record(bon)
 
 
@@ -696,7 +734,7 @@ def rattacher_bl_a_facture(numero_facture: str, body: RattachementBL):
     bon["numero_facture_rattachee"] = numero_facture
     _store["bons"][body.numero_bon_livraison] = bon
 
-    _regenerate_excel()
+    _schedule_regenerate_excel()
     return {
         "facture": _serialize_record(facture),
         "bon":     _serialize_record(bon),
@@ -727,7 +765,7 @@ def rattacher_facture_a_bl(numero_bl: str, body: RattachementFacture):
     facture["bons_livraisons"] = bons_list
     _store["factures"][body.numero_facture] = facture
 
-    _regenerate_excel()
+    _schedule_regenerate_excel()
     return {
         "bon":     _serialize_record(bon),
         "facture": _serialize_record(facture),
@@ -753,7 +791,7 @@ def supprimer_rattachement(numero_facture: str, numero_bl: str):
         bon["numero_facture_rattachee"] = None
         _store["bons"][numero_bl] = bon
 
-    _regenerate_excel()
+    _schedule_regenerate_excel()
     return {"message": f"Rattachement {numero_bl} ↔ {numero_facture} supprimé."}
 
 
@@ -956,3 +994,29 @@ def _regenerate_excel():
         )
     except Exception as e:
         print(f"[WARN] _regenerate_excel : erreur lors de l'ecriture dans le xlsm : {e}")
+
+
+def _schedule_regenerate_excel() -> None:
+    """
+    Déclenche une persistance XLSM en arrière-plan.
+    Les demandes concurrentes sont fusionnées pour éviter les blocages en rafale.
+    """
+    global _regen_pending, _regen_running
+
+    with _regen_lock:
+        _regen_pending = True
+        if _regen_running:
+            return
+        _regen_running = True
+
+    def _worker():
+        global _regen_pending, _regen_running
+        while True:
+            with _regen_lock:
+                if not _regen_pending:
+                    _regen_running = False
+                    return
+                _regen_pending = False
+            _regenerate_excel()
+
+    threading.Thread(target=_worker, daemon=True).start()

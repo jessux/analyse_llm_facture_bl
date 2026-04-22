@@ -2,12 +2,16 @@ from datetime import date, timedelta
 from calendar import monthrange
 from typing import Literal
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
-from markitdown import MarkItDown
 from openai import OpenAI
 import os
 import re
+
+try:
+    from markitdown import MarkItDown
+except ImportError:
+    MarkItDown = None
 
 load_dotenv()
 
@@ -35,36 +39,49 @@ APIM_OPENAI_API_KEY = os.getenv("APIM_OPENAI_API_KEY")
 api_key = APIM_OPENAI_API_KEY
 feature = "my-feature"
 
-llm = ChatOpenAI(
-    model="gpt-5.1-2025-11-13",
-    api_key=SecretStr(api_key),
-    base_url=APIM_OPENAI_BASE_URL,
-    default_headers=build_apim_headers(feature=feature, api_key=api_key),
-    use_responses_api=False,
-    streaming=False,
-    reasoning_effort="low",
-    temperature=0,
-    max_retries=3,
-    max_completion_tokens=1024,
-    verbose=True,
-).with_structured_output(
-    DocumentInfo,
-    method="json_schema",
-    strict=False,
-    include_raw=False,
-)
+llm = None
+llm_client = None
+if APIM_OPENAI_BASE_URL and APIM_OPENAI_API_KEY:
+    llm = ChatOpenAI(
+        model="gpt-5.1-2025-11-13",
+        api_key=api_key,  # type: ignore[arg-type]
+        base_url=APIM_OPENAI_BASE_URL,
+        default_headers=build_apim_headers(feature=feature, api_key=api_key),
+        use_responses_api=False,
+        streaming=False,
+        reasoning_effort="low",
+        temperature=0,
+        max_retries=3,
+        max_completion_tokens=1024,
+        verbose=True,
+    ).with_structured_output(
+        DocumentInfo,
+        method="json_schema",
+        strict=False,
+        include_raw=False,
+    )
 
-llm_client = OpenAI(
-    api_key=api_key,
-    base_url=APIM_OPENAI_BASE_URL,
-    default_headers=build_apim_headers(feature=feature, api_key=api_key),
-)
+    llm_client = OpenAI(
+        api_key=api_key,
+        base_url=APIM_OPENAI_BASE_URL,
+        default_headers=build_apim_headers(feature=feature, api_key=api_key),
+    )
+else:
+    print("[WARN] APIM_OPENAI_* non configure: endpoints IA indisponibles, API edition reste active.")
 
-md = MarkItDown(enable_plugins=True, llm_client=llm_client, llm_model="gpt-5.1-2025-11-13")
+if MarkItDown is not None and llm_client is not None:
+    md = MarkItDown(enable_plugins=True, llm_client=llm_client, llm_model="gpt-5.1-2025-11-13")
+else:
+    md = None
 
 print("Initialisation terminée. Prêt à traiter les documents.")
 
 def load_pdf_text(filepath: str) -> str:
+    if md is None:
+        raise RuntimeError(
+            "Le package 'markitdown' n'est pas installe. "
+            "Installez-le pour activer l'extraction PDF (pip install markitdown)."
+        )
     return md.convert(filepath).text_content
 
 def extract_date_candidates(text: str) -> list[date]:

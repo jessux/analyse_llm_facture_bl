@@ -5,10 +5,11 @@ import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
 import {
   fetchBonsLivraison,
+  fetchFournisseurs,
   getTresorerieDownloadUrl,
   getPdfUrl,
   patchBon,
-  FOURNISSEURS,
+  type Fournisseur,
   type BonLivraison,
 } from "@/lib/api";
 import ModalRattachement from "./ModalRattachement";
@@ -48,6 +49,7 @@ function hasError(b: BonLivraison) {
 
 export default function TableauBonsLivraison() {
   const [data, setData] = useState<BonLivraison[]>([]);
+  const [fournisseurs, setFournisseurs] = useState<Fournisseur[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -58,7 +60,12 @@ export default function TableauBonsLivraison() {
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchBonsLivraison());
+      const [bons, fournisseursApi] = await Promise.all([
+        fetchBonsLivraison(),
+        fetchFournisseurs(),
+      ]);
+      setData(bons);
+      setFournisseurs(fournisseursApi);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur de chargement.");
     } finally {
@@ -178,7 +185,7 @@ export default function TableauBonsLivraison() {
                         <EditableCell
                           value={b.nom_fournisseur}
                           type="select"
-                          options={FOURNISSEURS}
+                          options={fournisseurs.map((fr) => fr.id)}
                           onSave={save("nom_fournisseur")}
                           renderValue={(v) => supplierBadge(v as string | null)}
                         />

@@ -4,8 +4,8 @@ const API_BASE = "/backend";
 // Types
 // ---------------------------------------------------------------------------
 
-export type FournisseurKey = "SYSCO" | "AMBELYS" | "TERREAZUR";
-export const FOURNISSEURS: FournisseurKey[] = ["SYSCO", "AMBELYS", "TERREAZUR"];
+export type FournisseurKey = ""
+export const FOURNISSEURS: FournisseurKey[] = [];
 
 export interface Facture {
   numero_facture: string | null;

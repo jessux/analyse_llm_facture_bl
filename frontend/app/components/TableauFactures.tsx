@@ -5,9 +5,10 @@ import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
 import {
   fetchFactures,
+  fetchFournisseurs,
   exportTresorerie, getTresorerieDownloadUrl,
   getPdfUrl, patchFacture,
-  FOURNISSEURS,
+  type Fournisseur,
   type Facture,
 } from "@/lib/api";
 import ModalRattachement from "./ModalRattachement";
@@ -33,9 +34,10 @@ function formatMontant(v: number | null | undefined, className?: string) {
   );
 }
 
-function isOverdue(dateStr: string | null): boolean {
+function isInvalidDate(dateStr: string | null): boolean {
   if (!dateStr) return false;
-  return new Date(dateStr) < new Date();
+  const d = new Date(dateStr);
+  return Number.isNaN(d.getTime());
 }
 
 /** Badge OK / Erreur pour les vérifications TVA */
@@ -67,6 +69,7 @@ function hasError(f: Facture | { verif_tva_5_5: string; verif_tva_10: string; ve
 
 export default function TableauFactures() {
   const [data, setData]                   = useState<Facture[]>([]);
+  const [fournisseurs, setFournisseurs]   = useState<Fournisseur[]>([]);
   const [loading, setLoading]             = useState(true);
   const [error, setError]                 = useState<string | null>(null);
   const [search, setSearch]               = useState("");
@@ -80,7 +83,12 @@ export default function TableauFactures() {
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchFactures());
+      const [factures, fournisseursApi] = await Promise.all([
+        fetchFactures(),
+        fetchFournisseurs(),
+      ]);
+      setData(factures);
+      setFournisseurs(fournisseursApi);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur de chargement.");
     } finally {
@@ -256,7 +264,7 @@ export default function TableauFactures() {
                         <EditableCell
                           value={f.nom_fournisseur}
                           type="select"
-                          options={FOURNISSEURS}
+                          options={fournisseurs.map((fr) => fr.id)}
                           onSave={save("nom_fournisseur")}
                           renderValue={(v) => supplierBadge(v as string | null)}
                         />
@@ -278,7 +286,7 @@ export default function TableauFactures() {
                           type="date"
                           onSave={save("date_paiement_prevue")}
                           renderValue={(v) => formatDate(v as string | null)}
-                          highlight={isOverdue(f.date_paiement_prevue)
+                          highlight={isInvalidDate(f.date_paiement_prevue)
                             ? "text-red-600 dark:text-red-400 font-semibold"
                             : "text-neutral-600 dark:text-neutral-400"}
                         />

@@ -20,6 +20,7 @@ export default function UploadZone({ onSuccess }: UploadZoneProps) {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [result, setResult] = useState<UploadResult | null>(null);
+  const [showRecapModal, setShowRecapModal] = useState(false);
 
   const handleFiles = useCallback((incoming: FileList | null) => {
     if (!incoming) return;
@@ -31,6 +32,7 @@ export default function UploadZone({ onSuccess }: UploadZoneProps) {
     }
     setErrorMsg("");
     setResult(null);
+    setShowRecapModal(false);
     setStatus("idle");
     setFiles((prev) => [
       ...prev,
@@ -83,6 +85,7 @@ export default function UploadZone({ onSuccess }: UploadZoneProps) {
         }))
       );
       setStatus("success");
+      setShowRecapModal(true);
       onSuccess?.();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "Erreur inconnue.");
@@ -96,7 +99,10 @@ export default function UploadZone({ onSuccess }: UploadZoneProps) {
     setStatus("idle");
     setErrorMsg("");
     setResult(null);
+    setShowRecapModal(false);
   };
+
+  const closeRecapModal = () => setShowRecapModal(false);
 
   return (
     <div className="flex flex-col gap-6">
@@ -147,62 +153,24 @@ export default function UploadZone({ onSuccess }: UploadZoneProps) {
 
       {/* Résultat succès */}
       {status === "success" && result && (
-        <div className="flex flex-col gap-2">
-          {/* Ligne principale */}
-          <div className="flex items-start gap-2 rounded-lg bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 px-4 py-3">
+        <div className="flex items-start justify-between gap-3 rounded-lg bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 px-4 py-3">
+          <div className="flex items-start gap-2">
             <CheckIcon className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-emerald-700 dark:text-emerald-400">
-              <span className="font-medium">
+            <div className="text-sm text-emerald-700 dark:text-emerald-400">
+              <p className="font-medium">
                 {result.traites} document{result.traites > 1 ? "s" : ""} traité{result.traites > 1 ? "s" : ""}
-              </span>
-              {result.created.factures + result.created.bons > 0 && (
-                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 dark:bg-emerald-900 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-                  +{result.created.factures + result.created.bons} nouveau{result.created.factures + result.created.bons > 1 ? "x" : ""}
-                </span>
-              )}
-              {result.updated.factures + result.updated.bons > 0 && (
-                <span className="inline-flex items-center gap-1 rounded-md bg-blue-100 dark:bg-blue-900 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">
-                  ↻ {result.updated.factures + result.updated.bons} mis à jour
-                </span>
-              )}
+              </p>
+              <p className="text-xs mt-0.5 opacity-90">
+                Consultez le récapitulatif détaillé pour vérifier les imports, rejets et erreurs.
+              </p>
             </div>
           </div>
-
-          {/* Documents rejetés (numéro null) */}
-          {result.rejetes?.length > 0 && (
-            <div className="rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 px-4 py-3">
-              <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-1.5">
-                {result.rejetes.length} document{result.rejetes.length > 1 ? "s" : ""} rejeté{result.rejetes.length > 1 ? "s" : ""} — numéro non extrait
-              </p>
-              <ul className="flex flex-col gap-1">
-                {result.rejetes.map((r, i) => (
-                  <li key={i} className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
-                    <span className="font-mono truncate">{r.fichier}</span>
-                    <span className="text-amber-400 dark:text-amber-600">·</span>
-                    <span>{r.raison}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Erreurs techniques */}
-          {result.erreurs.length > 0 && (
-            <div className="rounded-lg bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 px-4 py-3">
-              <p className="text-xs font-semibold text-red-700 dark:text-red-400 mb-1.5">
-                {result.erreurs.length} erreur{result.erreurs.length > 1 ? "s" : ""} technique{result.erreurs.length > 1 ? "s" : ""}
-              </p>
-              <ul className="flex flex-col gap-1">
-                {result.erreurs.map((e, i) => (
-                  <li key={i} className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
-                    <span className="font-mono truncate">{e.fichier}</span>
-                    <span className="text-red-400 dark:text-red-600">·</span>
-                    <span>{e.erreur}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          <button
+            onClick={() => setShowRecapModal(true)}
+            className="flex-shrink-0 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 text-xs font-medium transition-colors"
+          >
+            Voir le récapitulatif
+          </button>
         </div>
       )}
 
@@ -302,6 +270,128 @@ export default function UploadZone({ onSuccess }: UploadZoneProps) {
             </button>
           </div>
         </div>
+      )}
+
+      {showRecapModal && result && (
+        <>
+          <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={closeRecapModal} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="w-full max-w-3xl max-h-[88vh] overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-2xl flex flex-col">
+              <div className="flex items-start justify-between gap-4 px-6 py-5 border-b border-neutral-100 dark:border-neutral-800">
+                <div>
+                  <h2 className="text-base font-semibold text-neutral-900 dark:text-white">
+                    Récapitulatif de l'import
+                  </h2>
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
+                    Vérifiez les documents importés, rejetés et les éventuelles erreurs.
+                  </p>
+                </div>
+                <button
+                  onClick={closeRecapModal}
+                  className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
+                >
+                  <XIcon className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto flex flex-col gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 p-3">
+                    <p className="text-xs text-emerald-700 dark:text-emerald-300">Traités</p>
+                    <p className="text-xl font-semibold text-emerald-700 dark:text-emerald-300">{result.traites}</p>
+                  </div>
+                  <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 p-3">
+                    <p className="text-xs text-neutral-600 dark:text-neutral-300">Nouveaux</p>
+                    <p className="text-xl font-semibold text-neutral-900 dark:text-white">{result.created.factures + result.created.bons}</p>
+                  </div>
+                  <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 p-3">
+                    <p className="text-xs text-blue-700 dark:text-blue-300">Mis à jour</p>
+                    <p className="text-xl font-semibold text-blue-700 dark:text-blue-300">{result.updated.factures + result.updated.bons}</p>
+                  </div>
+                  <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950 p-3">
+                    <p className="text-xs text-red-700 dark:text-red-300">Erreurs</p>
+                    <p className="text-xl font-semibold text-red-700 dark:text-red-300">{result.erreurs.length}</p>
+                  </div>
+                </div>
+
+                {result.rejetes.length > 0 && (
+                  <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-4 py-3">
+                    <p className="text-xs font-semibold text-amber-700 dark:text-amber-300 mb-2">
+                      Documents rejetés ({result.rejetes.length})
+                    </p>
+                    <ul className="space-y-1">
+                      {result.rejetes.map((r, i) => (
+                        <li key={i} className="text-xs text-amber-700 dark:text-amber-300 flex items-center gap-2">
+                          <span className="font-mono truncate">{r.fichier}</span>
+                          <span className="opacity-60">·</span>
+                          <span>{r.raison}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {result.erreurs.length > 0 && (
+                  <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950 px-4 py-3">
+                    <p className="text-xs font-semibold text-red-700 dark:text-red-300 mb-2">
+                      Erreurs techniques ({result.erreurs.length})
+                    </p>
+                    <ul className="space-y-1">
+                      {result.erreurs.map((e, i) => (
+                        <li key={i} className="text-xs text-red-700 dark:text-red-300 flex items-center gap-2">
+                          <span className="font-mono truncate">{e.fichier}</span>
+                          <span className="opacity-60">·</span>
+                          <span>{e.erreur}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="rounded-lg border border-neutral-200 dark:border-neutral-800">
+                  <div className="px-4 py-2 border-b border-neutral-200 dark:border-neutral-800 text-xs font-semibold text-neutral-600 dark:text-neutral-300">
+                    Détail des fichiers sélectionnés
+                  </div>
+                  <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
+                    {files.map((item, i) => (
+                      <li key={i} className="px-4 py-2 text-xs flex items-center justify-between gap-3">
+                        <span className="font-mono truncate text-neutral-700 dark:text-neutral-200">{item.file.name}</span>
+                        <span
+                          className={`px-2 py-0.5 rounded-md font-medium ${
+                            item.status === "done"
+                              ? "bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300"
+                              : item.status === "rejected"
+                              ? "bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300"
+                              : item.status === "error"
+                              ? "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300"
+                              : "bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300"
+                          }`}
+                        >
+                          {item.status === "done"
+                            ? "Importé"
+                            : item.status === "rejected"
+                            ? "Rejeté"
+                            : item.status === "error"
+                            ? "Erreur"
+                            : item.status}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+              <div className="px-6 py-4 border-t border-neutral-100 dark:border-neutral-800 flex justify-end">
+                <button
+                  onClick={closeRecapModal}
+                  className="px-4 py-2 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-sm font-medium hover:bg-neutral-700 dark:hover:bg-neutral-200 transition-colors"
+                >
+                  Fermer
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
