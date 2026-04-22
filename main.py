@@ -141,32 +141,153 @@ def normalize_supplier_name(value: str | None) -> str | None:
     return None
 
 def classify_document(text: str, filename: str) -> str:
-    lower = text.lower()
-    head = lower[:8000]
-    f = filename.lower()
+    """
+    Classifie un document en 'facture' ou 'bon_livraison'.
 
-    # Règle prioritaire : si le mot "facture" est présent dans le texte ou le nom de fichier, c'est une facture
-    if "facture" in head or "facture" in f:
+    Stratégie en 3 passes :
+      1. Règles déterministes sur le nom de fichier (patterns fournisseurs connus)
+      2. Règles déterministes sur le contenu textuel (marqueurs forts)
+      3. Scoring pondéré sur le contenu (arbitrage en cas d'ambiguïté)
+    """
+    lower = text.lower()
+    # On analyse les 12 000 premiers caractères pour couvrir les en-têtes longs
+    head = lower[:12_000]
+    f = filename.lower()
+    fname = os.path.splitext(os.path.basename(f))[0]  # nom sans extension
+
+    # ------------------------------------------------------------------
+    # PASSE 1 — Patterns déterministes sur le nom de fichier
+    # ------------------------------------------------------------------
+
+    # AMBELYS : préfixe numérique + lettre de type
+    #   C = commande / bon de livraison  (ex: 01_AMBELYS-C215075)
+    #   F = facture                      (ex: 01_F826802)
+    if re.search(r"\bambelys", f):
+        if re.search(r"[-_]c\d{4,}", fname):          # -C215075
+            return "bon_livraison"
+        if re.search(r"[-_]f\d{4,}", fname):          # -F826802 ou _F826802
+            return "facture"
+
+    # SYSCO : patterns de nommage connus
+    #   BL / livraison / cde dans le nom → BL
+    #   F / FAC / facture dans le nom → facture
+    if re.search(r"\bsysco", f):
+        if re.search(r"[-_ ](bl|bon|livraison|cde|cmd)\b", fname):
+            return "bon_livraison"
+        if re.search(r"[-_ ](f|fac|facture)\b", fname):
+            return "facture"
+
+    # TERREAZUR / TERRE AZUR
+    if re.search(r"terre\s*azur", f):
+        if re.search(r"[-_ ](bl|bon|livraison|cde)\b", fname):
+            return "bon_livraison"
+        if re.search(r"[-_ ](f|fac|facture)\b", fname):
+            return "facture"
+
+    # Patterns génériques dans le nom de fichier
+    if re.search(r"\b(bon[_\- ]de[_\- ]livraison|bon[_\- ]livraison)\b", fname):
+        return "bon_livraison"
+    if re.search(r"\bfacture\b", fname):
         return "facture"
 
+    # ------------------------------------------------------------------
+    # PASSE 2 — Marqueurs forts dans le contenu (quasi-certains)
+    # ------------------------------------------------------------------
+
+    # Marqueurs BL très forts (présents uniquement sur des BL)
+    BL_STRONG = [
+        r"\ba\s+livrer\s+le\b",          # "à livrer le"
+        r"\bbon\s+de\s+livraison\b",
+        r"\bbon\s+livraison\b",
+        r"\bdate\s+de\s+livraison\b",
+        r"\bar\s*cde\s*n[°o]?\s*\d+",   # AR CDE N°...
+        r"\bcommande\s+n[°o]?\s*\d+",
+        r"\bréférence\s+commande\b",
+    ]
+    bl_strong_hits = sum(1 for p in BL_STRONG if re.search(p, head))
+
+    # Marqueurs facture forts
+    INVOICE_STRONG = [
+        r"\bdate\s+de\s+facture\b",
+        r"\bnum[eé]ro\s+de\s+facture\b",
+        r"\bfacture\s+n[°o]?\s*\d+",
+        r"\b[eé]ch[eé]ance\b",
+        r"\bconditions\s+de\s+r[eè]glement\b",
+        r"\bnet\s+[àa]\s+payer\b",
+        r"\btotal\s+ttc\b",
+    ]
+    inv_strong_hits = sum(1 for p in INVOICE_STRONG if re.search(p, head))
+
+    # Si un type domine clairement → décision immédiate
+    if bl_strong_hits >= 2 and inv_strong_hits == 0:
+        return "bon_livraison"
+    if inv_strong_hits >= 2 and bl_strong_hits == 0:
+        return "facture"
+
+    # ------------------------------------------------------------------
+    # PASSE 3 — Scoring pondéré (arbitrage)
+    # ------------------------------------------------------------------
     invoice_score = 0
     delivery_score = 0
 
+    # Signaux BL
     if re.search(r"\bar\s*cde\s*n[°o]?\s*\d+", head):
         delivery_score += 10
-    if "a livrer le" in head or "à livrer le" in head:
+    if re.search(r"\ba\s+livrer\s+le\b", head):
         delivery_score += 8
-    for marker in ["bon de livraison", "bon livraison", "bl n", "bl n°"]:
-        if marker in head:
-            delivery_score += 4
+    if re.search(r"\bbon\s+de\s+livraison\b", head):
+        delivery_score += 8
+    if re.search(r"\bbon\s+livraison\b", head):
+        delivery_score += 6
+    if re.search(r"\bdate\s+de\s+livraison\b", head):
+        delivery_score += 5
+    if re.search(r"\bbl\s+n[°o]?\s*\d+", head):
+        delivery_score += 6
+    if re.search(r"\bcommande\s+n[°o]?\s*\d+", head):
+        delivery_score += 4
+    if re.search(r"\bquantit[eé]\s+(livr[eé]e?|command[eé]e?)\b", head):
+        delivery_score += 4
+    # Nom de fichier BL
+    if re.search(r"\b(bl|livraison|cde|cmd|bon)\b", fname):
+        delivery_score += 3
 
-    if re.search(r"\bttc\b|\btva\b|\béchéance\b|\bdate de facture\b", head):
+    # Signaux facture
+    if re.search(r"\bfacture\s+n[°o]?\s*\d+", head):
+        invoice_score += 10
+    if re.search(r"\bdate\s+de\s+facture\b", head):
+        invoice_score += 8
+    if re.search(r"\b[eé]ch[eé]ance\b", head):
+        invoice_score += 6
+    if re.search(r"\bnet\s+[àa]\s+payer\b", head):
+        invoice_score += 6
+    if re.search(r"\btotal\s+ttc\b", head):
+        invoice_score += 5
+    if re.search(r"\btva\b", head):
+        invoice_score += 3
+    if re.search(r"\bttc\b", head):
         invoice_score += 2
+    if re.search(r"\bconditions\s+de\s+r[eè]glement\b", head):
+        invoice_score += 4
+    # Nom de fichier facture
+    if re.search(r"\b(fac|facture|invoice)\b", fname):
+        invoice_score += 3
 
-    if "bl" in f or "livraison" in f or "cde" in f:
-        delivery_score += 2
+    # Intégration des hits forts dans le score
+    delivery_score += bl_strong_hits * 3
+    invoice_score  += inv_strong_hits * 3
 
-    return "bon_livraison" if delivery_score >= invoice_score else "facture"
+    # En cas d'égalité parfaite → on regarde si "facture" apparaît dans le texte
+    # mais uniquement en dehors d'une phrase de référence BL
+    if delivery_score == invoice_score:
+        # "facture" mentionné comme référence dans un BL ne compte pas
+        facture_ref = re.search(
+            r"(bon de livraison|bl n[°o]?).{0,200}facture|facture.{0,200}(bon de livraison|bl n[°o]?)",
+            head
+        )
+        if not facture_ref and "facture" in head:
+            invoice_score += 1
+
+    return "bon_livraison" if delivery_score > invoice_score else "facture"
 
 def normalize_invoice_dates(data: dict, text: str, filename: str) -> dict:
     candidates = extract_date_candidates(text)
