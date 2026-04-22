@@ -1,6 +1,7 @@
 import TableauBonsLivraison from "@/app/components/TableauBonsLivraison";
 import { TruckIcon } from "@/app/components/Icons";
 import Link from "next/link";
+import { Suspense } from "react";
 
 export default function BonsLivraisonPage() {
   return (
@@ -31,7 +32,9 @@ export default function BonsLivraisonPage() {
 
       {/* Table */}
       <div className="bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl px-3 py-4">
-        <TableauBonsLivraison />
+        <Suspense fallback={<div className="py-10 text-sm text-neutral-400">Chargement…</div>}>
+          <TableauBonsLivraison />
+        </Suspense>
       </div>
     </main>
   );
