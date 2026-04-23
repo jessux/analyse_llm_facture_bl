@@ -3,16 +3,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import Literal
-from datetime import date
+from typing import Literal, Any, cast
+from datetime import date, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import tempfile
 import shutil
+import time
+import json
 import os
 import re
 import zipfile
 import threading
+import uuid
 
 from main import (
     load_pdf_text,
@@ -26,6 +29,7 @@ from main import (
 )
 import openpyxl
 from openpyxl import load_workbook
+import domino as domino_module
 
 # Dossier de stockage persistant des PDFs importés
 STORAGE_DIR = "storage"
@@ -51,8 +55,15 @@ app.mount("/api/documents", StaticFiles(directory=STORAGE_DIR), name="documents"
 # Pool de threads dédié au traitement LLM (bloquant)
 _executor = ThreadPoolExecutor(max_workers=4)
 _regen_lock = threading.Lock()
+_xlsm_write_lock = threading.Lock()
 _regen_pending = False
 _regen_running = False
+_domino_resync_jobs: dict[str, dict] = {}
+_domino_resync_jobs_lock = threading.Lock()
+_automation_tasks: dict[str, dict[str, Any]] = {}
+_automation_logs: list[dict[str, Any]] = []
+_automation_lock = threading.Lock()
+_automation_scheduler_started = False
 
 # ---------------------------------------------------------------------------
 # Fichier source de vérité unique
@@ -85,6 +96,306 @@ def _resolve_tresorerie_path() -> str:
         )
         return TRESORERIE_XLSM_FALLBACK
     return TRESORERIE_XLSM
+
+
+def _iter_tresorerie_candidates() -> list[str]:
+    # Garder l'ordre principal -> fallback, sans doublons.
+    out: list[str] = []
+    for p in (TRESORERIE_XLSM, TRESORERIE_XLSM_FALLBACK):
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def _pick_valid_tresorerie_path() -> str | None:
+    for path in _iter_tresorerie_candidates():
+        if _is_valid_xlsm(path):
+            return path
+    return None
+
+
+def _build_tresorerie_invalid_detail() -> str:
+    states: list[str] = []
+    for path in _iter_tresorerie_candidates():
+        exists = os.path.exists(path)
+        valid = _is_valid_xlsm(path)
+        size = os.path.getsize(path) if exists else 0
+        states.append(f"{path} (exists={exists}, valid={valid}, size={size} bytes)")
+    return "; ".join(states)
+
+
+def _ensure_valid_tresorerie_path() -> str:
+    path = _pick_valid_tresorerie_path()
+    if path:
+        return path
+
+    any_exists = any(os.path.exists(p) for p in _iter_tresorerie_candidates())
+    if any_exists:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Aucun fichier xlsm valide trouve pour l'export. "
+                f"Etat: {_build_tresorerie_invalid_detail()}"
+            ),
+        )
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            "Fichier 'Suivi trésorerie MLC.xlsm' introuvable dans output/. "
+            f"Chemins testes: {_build_tresorerie_invalid_detail()}"
+        ),
+    )
+
+
+def _backup_path_for(path: str) -> str:
+    return f"{path}.lastgood.bak"
+
+
+def _restore_tresorerie_from_backup() -> dict:
+    """Restaure le fichier trésorerie depuis sa backup .lastgood.bak."""
+    candidates = _iter_tresorerie_candidates()
+
+    for target in candidates:
+        backup = _backup_path_for(target)
+        if os.path.exists(backup) and _is_valid_xlsm(backup):
+            os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+            shutil.copy2(backup, target)
+            if not _is_valid_xlsm(target):
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "La restauration de backup a echoue: le fichier restaure est invalide. "
+                        f"target={target}, backup={backup}"
+                    ),
+                )
+            return {
+                "message": "Restauration XLSM effectuee depuis la backup last-good.",
+                "target": target,
+                "backup": backup,
+            }
+
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            "Aucune backup XLSM valide trouvee (.lastgood.bak). "
+            "Faites au moins une ecriture reussie pour generer une backup."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Automatisation — tâches planifiées + logs
+# ---------------------------------------------------------------------------
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _add_automation_log(task_id: str, level: Literal["info", "warn", "error"], message: str, details: dict | None = None) -> None:
+    entry = {
+        "timestamp": _now_iso(),
+        "task_id": task_id,
+        "level": level,
+        "message": message,
+        "details": details or {},
+    }
+    with _automation_lock:
+        _automation_logs.append(entry)
+        # Garder l'historique borné en mémoire
+        if len(_automation_logs) > 2000:
+            del _automation_logs[: len(_automation_logs) - 2000]
+
+
+def _init_automation_tasks() -> None:
+    with _automation_lock:
+        if _automation_tasks:
+            return
+        now = datetime.now()
+        _automation_tasks["mail_fetch"] = {
+            "id": "mail_fetch",
+            "label": "Recuperation des mails",
+            "description": "Simulation de récupération de pièces jointes mails.",
+            "interval_seconds": 300,
+            "enabled": False,
+            "is_running": False,
+            "last_start": None,
+            "last_end": None,
+            "last_status": "idle",
+            "last_error": None,
+            "run_count": 0,
+            "error_count": 0,
+            "next_run": now.isoformat(timespec="seconds"),
+        }
+        _automation_tasks["domino_auto_import"] = {
+            "id": "domino_auto_import",
+            "label": "Import DOMINO automatique",
+            "description": "Importe les nouveaux fichiers DOMINO non traités dans XLSM.",
+            "interval_seconds": 600,
+            "enabled": False,
+            "is_running": False,
+            "last_start": None,
+            "last_end": None,
+            "last_status": "idle",
+            "last_error": None,
+            "run_count": 0,
+            "error_count": 0,
+            "next_run": now.isoformat(timespec="seconds"),
+        }
+        _automation_tasks["xlsx_healthcheck"] = {
+            "id": "xlsx_healthcheck",
+            "label": "Controle sante XLSM",
+            "description": "Vérifie la validité du fichier XLSM principal/fallback.",
+            "interval_seconds": 900,
+            "enabled": False,
+            "is_running": False,
+            "last_start": None,
+            "last_end": None,
+            "last_status": "idle",
+            "last_error": None,
+            "run_count": 0,
+            "error_count": 0,
+            "next_run": now.isoformat(timespec="seconds"),
+        }
+
+
+def _run_mail_fetch_task() -> dict:
+    # Placeholder robuste: on log l'état des dossiers d'entrée/sortie.
+    storage_files = len(os.listdir(STORAGE_DIR)) if os.path.exists(STORAGE_DIR) else 0
+    domino_files = len([f for f in os.listdir(domino_module.DOMINO_FOLDER)]) if os.path.exists(domino_module.DOMINO_FOLDER) else 0
+    _add_automation_log(
+        "mail_fetch",
+        "info",
+        "Vérification de récupération mails exécutée.",
+        {"storage_files": storage_files, "domino_files": domino_files},
+    )
+    return {"storage_files": storage_files, "domino_files": domino_files}
+
+
+def _run_domino_auto_import_task() -> dict:
+    files = domino_module.list_domino_files()
+    pending = [f for f in files if not f.get("imported")]
+    if not pending:
+        _add_automation_log("domino_auto_import", "info", "Aucun nouveau fichier DOMINO a importer.")
+        return {"pending": 0, "imported": 0}
+
+    imported_count = 0
+    active_xlsm = _pick_valid_tresorerie_path()
+    with _xlsm_write_lock:
+        for f in pending:
+            try:
+                res = domino_module.import_domino_file(
+                    filename=f["filename"],
+                    xlsm_path=active_xlsm,
+                    overwrite=False,
+                )
+                if not res.get("skipped"):
+                    imported_count += 1
+            except Exception as e:
+                _add_automation_log(
+                    "domino_auto_import",
+                    "error",
+                    f"Echec import {f['filename']}",
+                    {"error": str(e)},
+                )
+
+    _add_automation_log(
+        "domino_auto_import",
+        "info",
+        "Import automatique DOMINO exécuté.",
+        {"pending": len(pending), "imported": imported_count},
+    )
+    return {"pending": len(pending), "imported": imported_count}
+
+
+def _run_xlsx_healthcheck_task() -> dict:
+    states = []
+    for p in _iter_tresorerie_candidates():
+        exists = os.path.exists(p)
+        valid = _is_valid_xlsm(p)
+        size = os.path.getsize(p) if exists else 0
+        states.append({"path": p, "exists": exists, "valid": valid, "size": size})
+    _add_automation_log("xlsx_healthcheck", "info", "Contrôle XLSM exécuté.", {"files": states})
+    return {"files": states}
+
+
+def _execute_automation_task(task_id: str, trigger: Literal["manual", "scheduled"] = "manual") -> None:
+    with _automation_lock:
+        task = _automation_tasks.get(task_id)
+        if not task:
+            return
+        if task.get("is_running"):
+            return
+        task["is_running"] = True
+        task["last_start"] = _now_iso()
+        task["last_status"] = "running"
+        task["last_error"] = None
+
+    _add_automation_log(task_id, "info", f"Execution de tache ({trigger}).")
+
+    try:
+        if task_id == "mail_fetch":
+            result = _run_mail_fetch_task()
+        elif task_id == "domino_auto_import":
+            result = _run_domino_auto_import_task()
+        elif task_id == "xlsx_healthcheck":
+            result = _run_xlsx_healthcheck_task()
+        else:
+            raise ValueError(f"Tache inconnue: {task_id}")
+
+        with _automation_lock:
+            task = _automation_tasks[task_id]
+            task["run_count"] += 1
+            task["last_status"] = "ok"
+            task["last_end"] = _now_iso()
+            next_run_dt = datetime.now() + timedelta(seconds=int(task["interval_seconds"]))
+            task["next_run"] = next_run_dt.isoformat(timespec="seconds")
+            task["is_running"] = False
+        _add_automation_log(task_id, "info", "Execution terminee.", {"result": result})
+    except Exception as e:
+        with _automation_lock:
+            task = _automation_tasks[task_id]
+            task["error_count"] += 1
+            task["last_status"] = "error"
+            task["last_error"] = str(e)
+            task["last_end"] = _now_iso()
+            next_run_dt = datetime.now() + timedelta(seconds=int(task["interval_seconds"]))
+            task["next_run"] = next_run_dt.isoformat(timespec="seconds")
+            task["is_running"] = False
+        _add_automation_log(task_id, "error", "Execution en echec.", {"error": str(e)})
+
+
+def _automation_scheduler_loop() -> None:
+    global _automation_scheduler_started
+    while True:
+        due_ids: list[str] = []
+        now = datetime.now()
+        with _automation_lock:
+            for task_id, task in _automation_tasks.items():
+                if not task.get("enabled") or task.get("is_running"):
+                    continue
+                next_run = task.get("next_run")
+                try:
+                    next_dt = datetime.fromisoformat(next_run) if next_run else now
+                except ValueError:
+                    next_dt = now
+                if now >= next_dt:
+                    due_ids.append(task_id)
+
+        for task_id in due_ids:
+            _executor.submit(_execute_automation_task, task_id, "scheduled")
+
+        # heartbeat léger
+        time.sleep(1.0)
+
+
+def _start_automation_scheduler_once() -> None:
+    global _automation_scheduler_started
+    with _automation_lock:
+        if _automation_scheduler_started:
+            return
+        _automation_scheduler_started = True
+    t = threading.Thread(target=_automation_scheduler_loop, daemon=True, name="automation-scheduler")
+    t.start()
 
 # ---------------------------------------------------------------------------
 # Store en mémoire (remplaçable par une BDD)
@@ -152,17 +463,17 @@ def _startup_load_excel() -> None:
 
     Les factures multi-BL sont agrégées par numero_facture pour les montants HT.
     """
-    global TRESORERIE_XLSM
-    TRESORERIE_XLSM = _resolve_tresorerie_path()
-
-    if not os.path.exists(TRESORERIE_XLSM):
-        print(f"[WARN] Fichier '{TRESORERIE_XLSM}' introuvable - store vide. "
-              "Deposez 'Suivi tresorerie MLC.xlsm' dans output/.")
+    active_xlsm = _pick_valid_tresorerie_path()
+    if not active_xlsm:
+        print(
+            "[WARN] Aucun xlsm valide au demarrage - store vide. "
+            f"Etat: {_build_tresorerie_invalid_detail()}"
+        )
         return
 
     try:
         # data_only=True pour lire les valeurs calculées des formules Excel (cache)
-        wb = load_workbook(TRESORERIE_XLSM, read_only=True, data_only=True)
+        wb = load_workbook(active_xlsm, read_only=True, data_only=True)
         ws = wb["Achats Cons"]
 
         # Mapping fournisseur affiché -> clé interne
@@ -343,10 +654,47 @@ def _startup_load_excel() -> None:
 
         nb_f = len(_store["factures"])
         nb_b = len(_store["bons"])
-        print(f"[OK] Store rechargé depuis '{TRESORERIE_XLSM}' : {nb_f} facture(s), {nb_b} bon(s) de livraison.")
+        print(f"[OK] Store rechargé depuis '{active_xlsm}' : {nb_f} facture(s), {nb_b} bon(s) de livraison.")
 
     except Exception as e:
         print(f"[WARN] Impossible de charger le fichier xlsm au démarrage : {e}")
+
+
+@app.on_event("startup")
+def _startup_domino_auto_import() -> None:
+    """
+    Au démarrage, importe automatiquement les fichiers DOMINO non encore traités.
+    N'écrase jamais les imports existants.
+    """
+    files = domino_module.list_domino_files()
+    pending = [f for f in files if not f["imported"]]
+    if not pending:
+        return
+
+    active_xlsm = _pick_valid_tresorerie_path()
+    imported_count = 0
+    for f in pending:
+        try:
+            result = domino_module.import_domino_file(
+                filename=f["filename"],
+                xlsm_path=active_xlsm,
+                overwrite=False,
+            )
+            if not result.get("skipped"):
+                imported_count += 1
+                print(f"[DOMINO] Auto-import '{f['filename']}' : {result['message']}")
+        except Exception as e:
+            print(f"[DOMINO] Erreur auto-import '{f['filename']}' : {e}")
+
+    if imported_count:
+        print(f"[DOMINO] {imported_count} fichier(s) auto-importé(s) au démarrage.")
+
+
+@app.on_event("startup")
+def _startup_automation_scheduler() -> None:
+    _init_automation_tasks()
+    _start_automation_scheduler_once()
+    print("[AUTOMATION] Scheduler initialisé.")
 
 
 def _serialize(obj):
@@ -450,7 +798,13 @@ def _process_one_pdf(tmp_path: str, filename: str, fournisseur_ids: list[str]) -
         prompt   = build_prompt(doc_type, text, fournisseur_ids=fournisseur_ids)
 
         result = llm.invoke(prompt)
-        data   = result.model_dump() if hasattr(result, "model_dump") else dict(result)
+        model_dump = getattr(result, "model_dump", None)
+        if callable(model_dump):
+            data = cast(dict[str, Any], model_dump())
+        elif isinstance(result, dict):
+            data = cast(dict[str, Any], result)
+        else:
+            data = cast(dict[str, Any], dict(result))
         data   = finalize_document_data(
             data, text=text, filename=filename, predicted_type=doc_type,
             fournisseur_patterns={k: v["patterns"] for k, v in _fournisseurs.items()},
@@ -927,16 +1281,48 @@ def get_stats():
 @app.get("/api/export/tresorerie/download", summary="Télécharger le fichier Suivi Trésorerie MLC.xlsm")
 def download_tresorerie():
     """Télécharge le fichier Suivi trésorerie MLC.xlsm (source de vérité)."""
-    if not os.path.exists(TRESORERIE_XLSM):
-        raise HTTPException(
-            status_code=404,
-            detail="Fichier 'Suivi trésorerie MLC.xlsm' introuvable dans output/.",
-        )
+    path = _ensure_valid_tresorerie_path()
     return FileResponse(
-        path=TRESORERIE_XLSM,
+        path=path,
         media_type="application/vnd.ms-excel.sheet.macroEnabled.12",
         filename="Suivi trésorerie MLC.xlsm",
     )
+
+
+@app.post("/api/export/tresorerie", summary="Générer le fichier Suivi Trésorerie MLC.xlsm")
+def export_tresorerie():
+    """Force la régénération du xlsm depuis le store en mémoire."""
+    active_xlsm = _ensure_valid_tresorerie_path()
+
+    try:
+        factures = list(_store["factures"].values())
+        bons = list(_store["bons"].values())
+        with _xlsm_write_lock:
+            lignes_inserees = write_to_achats_cons(
+                factures=factures,
+                bons=bons,
+                template_path=active_xlsm,
+                output_path=active_xlsm,
+                fournisseur_display=_get_fournisseur_display(),
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}".rstrip(": ")
+        raise HTTPException(status_code=500, detail=f"Export trésorerie impossible: {err}")
+
+    return {
+        "lignes_inserees": lignes_inserees,
+        "fichier": os.path.basename(active_xlsm),
+        "message": "Export trésorerie généré.",
+    }
+
+
+@app.post("/api/export/tresorerie/restore-lastgood", summary="Restaurer le XLSM depuis la backup last-good")
+def restore_tresorerie_lastgood():
+    """Restaure le fichier xlsm principal/fallback à partir de la backup .lastgood.bak."""
+    with _xlsm_write_lock:
+        return _restore_tresorerie_from_backup()
 
 
 @app.delete("/api/reset", summary="Réinitialiser le store en mémoire (ne touche pas au xlsm)")
@@ -944,6 +1330,246 @@ def reset_store():
     _store["factures"] = {}
     _store["bons"] = {}
     return {"message": "Store réinitialisé."}
+
+
+# ---------------------------------------------------------------------------
+# Automatisation — pilotage tâches + logs
+# ---------------------------------------------------------------------------
+
+@app.get("/api/automation/tasks", summary="Lister les tâches d'automatisation")
+def automation_list_tasks():
+    with _automation_lock:
+        tasks = [dict(v) for v in _automation_tasks.values()]
+    tasks.sort(key=lambda x: x.get("id", ""))
+    return tasks
+
+
+@app.get("/api/automation/logs", summary="Lister les logs d'automatisation")
+def automation_list_logs(task_id: str | None = None, limit: int = 200):
+    lim = max(1, min(limit, 1000))
+    with _automation_lock:
+        logs = list(_automation_logs)
+    if task_id:
+        logs = [l for l in logs if l.get("task_id") == task_id]
+    return logs[-lim:]
+
+
+@app.post("/api/automation/tasks/{task_id}/start", summary="Activer une tâche d'automatisation")
+def automation_start_task(task_id: str):
+    with _automation_lock:
+        task = _automation_tasks.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Tache '{task_id}' introuvable")
+        task["enabled"] = True
+        task["next_run"] = datetime.now().isoformat(timespec="seconds")
+    _add_automation_log(task_id, "info", "Tache activee.")
+    return {"message": f"Tache '{task_id}' activee."}
+
+
+@app.post("/api/automation/tasks/{task_id}/stop", summary="Désactiver une tâche d'automatisation")
+def automation_stop_task(task_id: str):
+    with _automation_lock:
+        task = _automation_tasks.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Tache '{task_id}' introuvable")
+        task["enabled"] = False
+    _add_automation_log(task_id, "warn", "Tache desactivee.")
+    return {"message": f"Tache '{task_id}' desactivee."}
+
+
+@app.post("/api/automation/tasks/{task_id}/run-now", summary="Exécuter une tâche immédiatement")
+def automation_run_task_now(task_id: str):
+    with _automation_lock:
+        task = _automation_tasks.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Tache '{task_id}' introuvable")
+        if task.get("is_running"):
+            raise HTTPException(status_code=409, detail=f"La tache '{task_id}' est deja en cours")
+    _executor.submit(_execute_automation_task, task_id, "manual")
+    return {"message": f"Execution immediate lancee pour '{task_id}'."}
+
+
+# ---------------------------------------------------------------------------
+# DOMINO — Automatisation import rapport journalier
+# ---------------------------------------------------------------------------
+
+@app.get("/api/domino/files", summary="Lister les fichiers DOMINO et leur statut d'import")
+def domino_list_files():
+    """Liste les fichiers .xlsx du dossier test_domino/ avec leur statut."""
+    return domino_module.list_domino_files()
+
+
+@app.get("/api/domino/data", summary="Données DOMINO importées")
+def domino_get_data():
+    """Retourne toutes les données DOMINO importées, triées par date décroissante."""
+    return domino_module.get_all_imported_data()
+
+
+@app.post("/api/domino/import-json", summary="Importer un JSON DOMINO (robuste)")
+async def domino_import_json(file: UploadFile = File(...), mode: str = "merge"):
+    """
+    Importe un JSON DOMINO avec validation/normalisation.
+    mode=merge (défaut) ou mode=replace.
+    """
+    try:
+        content = await file.read()
+        payload = json.loads(content.decode("utf-8"))
+        result = domino_module.import_json_payload(payload, mode=mode)
+        return result
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=422, detail=f"JSON invalide: {e}")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur import JSON DOMINO : {e}")
+
+
+@app.post("/api/domino/import/{filename}", summary="Importer un fichier DOMINO")
+def domino_import_file(filename: str, overwrite: bool = False):
+    """
+    Parse et importe un fichier DOMINO depuis test_domino/.
+    Si overwrite=false (défaut) et que le fichier a déjà été importé, retourne skipped=true.
+    Tente d'écrire dans l'onglet DOMINO du XLSM si disponible.
+    """
+    active_xlsm = _pick_valid_tresorerie_path()
+
+    try:
+        with _xlsm_write_lock:
+            result = domino_module.import_domino_file(
+                filename=filename,
+                xlsm_path=active_xlsm,
+                overwrite=overwrite,
+            )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur import DOMINO : {e}")
+
+    return result
+
+
+@app.post("/api/domino/import-all", summary="Importer tous les fichiers DOMINO non encore traités")
+def domino_import_all(overwrite: bool = False):
+    """
+    Importe en batch tous les fichiers DOMINO du dossier test_domino/.
+    Ignore par défaut les fichiers déjà importés.
+    """
+    files = domino_module.list_domino_files()
+    if not overwrite:
+        files = [f for f in files if not f["imported"]]
+
+    if not files:
+        return {"message": "Aucun fichier à importer.", "results": []}
+
+    active_xlsm = _pick_valid_tresorerie_path()
+    results = []
+    for f in files:
+        try:
+            with _xlsm_write_lock:
+                result = domino_module.import_domino_file(
+                    filename=f["filename"],
+                    xlsm_path=active_xlsm,
+                    overwrite=overwrite,
+                )
+            results.append(result)
+        except Exception as e:
+            results.append({
+                "filename": f["filename"],
+                "date": f.get("date"),
+                "skipped": False,
+                "xlsm_updated": False,
+                "cells_written": 0,
+                "message": f"Erreur : {e}",
+            })
+
+    imported = sum(1 for r in results if not r.get("skipped") and not r.get("xlsm_error") and "Erreur" not in r.get("message", ""))
+    return {
+        "message": f"{imported}/{len(results)} fichier(s) importé(s).",
+        "results": results,
+    }
+
+
+@app.post("/api/domino/resync-xlsm", summary="Forcer la resynchronisation DOMINO XLSM depuis le JSON")
+def domino_resync_xlsm_from_json(force_overwrite: bool = True):
+    """
+    Rejoue toutes les données DOMINO déjà présentes en JSON vers l'onglet DOMINO du XLSM.
+    Par défaut, écrase les valeurs existantes de la colonne date (force_overwrite=true).
+    """
+    active_xlsm = _ensure_valid_tresorerie_path()
+
+    try:
+        with _xlsm_write_lock:
+            result = domino_module.resync_xlsm_from_json(
+                xlsm_path=active_xlsm,
+                force_overwrite=force_overwrite,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur resynchronisation DOMINO : {e}")
+
+    result["fichier"] = os.path.basename(active_xlsm)
+    return result
+
+
+def _run_domino_resync_job(job_id: str, force_overwrite: bool) -> None:
+    """Worker de fond pour la resynchronisation DOMINO JSON -> XLSM."""
+    with _domino_resync_jobs_lock:
+        _domino_resync_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "message": "Resynchronisation en cours...",
+        }
+
+    try:
+        active_xlsm = _ensure_valid_tresorerie_path()
+        with _xlsm_write_lock:
+            result = domino_module.resync_xlsm_from_json(
+                xlsm_path=active_xlsm,
+                force_overwrite=force_overwrite,
+            )
+        result["fichier"] = os.path.basename(active_xlsm)
+        with _domino_resync_jobs_lock:
+            _domino_resync_jobs[job_id] = {
+                "job_id": job_id,
+                "status": "completed",
+                "message": result.get("message", "Resynchronisation terminee."),
+                "result": result,
+            }
+    except Exception as e:
+        with _domino_resync_jobs_lock:
+            _domino_resync_jobs[job_id] = {
+                "job_id": job_id,
+                "status": "failed",
+                "message": f"Echec de la resynchronisation: {e}",
+                "error": str(e),
+            }
+
+
+@app.post("/api/domino/resync-xlsm/start", summary="Démarrer une resynchronisation DOMINO en tâche de fond")
+def domino_resync_xlsm_start(force_overwrite: bool = True):
+    """
+    Lance la resynchronisation en arrière-plan et retourne immédiatement un job_id.
+    Évite les timeouts proxy sur les gros fichiers XLSM.
+    """
+    job_id = str(uuid.uuid4())
+    _executor.submit(_run_domino_resync_job, job_id, force_overwrite)
+    return {
+        "job_id": job_id,
+        "status": "running",
+        "message": "Resynchronisation DOMINO demarree.",
+    }
+
+
+@app.get("/api/domino/resync-xlsm/status/{job_id}", summary="Statut d'un job de resynchronisation DOMINO")
+def domino_resync_xlsm_status(job_id: str):
+    with _domino_resync_jobs_lock:
+        job = _domino_resync_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' introuvable")
+    return job
 
 
 # ---------------------------------------------------------------------------
@@ -991,22 +1617,28 @@ def _regenerate_excel():
     dont le fournisseur est Sysco / Ambelys / TerreAzur (col C).
     Les lignes des autres fournisseurs sont conservées intactes.
     """
-    if not os.path.exists(TRESORERIE_XLSM):
-        print(f"[WARN] _regenerate_excel : fichier '{TRESORERIE_XLSM}' introuvable, persistance ignoree.")
+    active_xlsm = _pick_valid_tresorerie_path()
+    if not active_xlsm:
+        print(
+            "[WARN] _regenerate_excel : aucun xlsm valide, persistance ignoree. "
+            f"Etat: {_build_tresorerie_invalid_detail()}"
+        )
         return
 
     try:
         factures = list(_store["factures"].values())
         bons     = list(_store["bons"].values())
-        write_to_achats_cons(
-            factures=factures,
-            bons=bons,
-            template_path=TRESORERIE_XLSM,
-            output_path=TRESORERIE_XLSM,
-            fournisseur_display=_get_fournisseur_display(),
-        )
+        with _xlsm_write_lock:
+            write_to_achats_cons(
+                factures=factures,
+                bons=bons,
+                template_path=active_xlsm,
+                output_path=active_xlsm,
+                fournisseur_display=_get_fournisseur_display(),
+            )
     except Exception as e:
-        print(f"[WARN] _regenerate_excel : erreur lors de l'ecriture dans le xlsm : {e}")
+        err = f"{type(e).__name__}: {e}".rstrip(": ")
+        print(f"[WARN] _regenerate_excel : erreur lors de l'ecriture dans le xlsm : {err}")
 
 
 def _schedule_regenerate_excel() -> None:

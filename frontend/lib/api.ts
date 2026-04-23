@@ -250,3 +250,199 @@ export async function supprimerRattachement(
     { method: "DELETE" }
   );
 }
+
+// ---------------------------------------------------------------------------
+// DOMINO — Rapport journalier
+// ---------------------------------------------------------------------------
+
+export interface DominoFile {
+  filename: string;
+  date: string | null;
+  imported: boolean;
+  imported_at: string | null;
+}
+
+export interface DominoData {
+  date: string;
+  filename: string;
+  ca_ttc_matin: number;
+  ca_ttc_midi: number;
+  ca_ttc_apm: number;
+  ca_ttc_soir: number;
+  ca_ttc_uber: number;
+  ca_ttc_deliveroo: number;
+  ca_ttc_total: number;
+  tva_total: number;
+  tva_55: number;
+  tva_10: number;
+  especes: number;
+  carte_bancaire: number;
+  cb_link: number;
+  belorder: number;
+  uber_eats: number;
+  deliveroo_paiement: number;
+  total_encaissements: number;
+  nb_clients_matin: number;
+  nb_clients_midi: number;
+  nb_clients_soir: number;
+  total_clients: number;
+}
+
+export interface DominoImport {
+  imported_at: string;
+  filename: string;
+  data: DominoData;
+}
+
+export interface DominoImportResult {
+  filename: string;
+  date: string | null;
+  skipped: boolean;
+  xlsm_updated: boolean;
+  cells_written: number;
+  xlsm_error?: string | null;
+  message: string;
+  data?: DominoData;
+}
+
+export async function fetchDominoFiles(): Promise<DominoFile[]> {
+  return apiFetch<DominoFile[]>("/api/domino/files");
+}
+
+export async function fetchDominoData(): Promise<DominoImport[]> {
+  return apiFetch<DominoImport[]>("/api/domino/data");
+}
+
+export async function importDominoFile(
+  filename: string,
+  overwrite = false
+): Promise<DominoImportResult> {
+  return apiFetch<DominoImportResult>(
+    `/api/domino/import/${encodeURIComponent(filename)}?overwrite=${overwrite}`,
+    { method: "POST" }
+  );
+}
+
+export async function importAllDomino(overwrite = false): Promise<{ message: string; results: DominoImportResult[] }> {
+  return apiFetch(`/api/domino/import-all?overwrite=${overwrite}`, { method: "POST" });
+}
+
+export interface DominoResyncResult {
+  message: string;
+  total: number;
+  written: number;
+  skipped: number;
+  errors: Array<{ date?: string; filename?: string; error: string }>;
+  fichier: string;
+}
+
+export async function resyncDominoXlsm(forceOverwrite = true): Promise<DominoResyncResult> {
+  return apiFetch<DominoResyncResult>(
+    `/api/domino/resync-xlsm?force_overwrite=${forceOverwrite}`,
+    { method: "POST" }
+  );
+}
+
+export interface DominoResyncStartResult {
+  job_id: string;
+  status: "running";
+  message: string;
+}
+
+export interface DominoResyncJobStatus {
+  job_id: string;
+  status: "running" | "completed" | "failed";
+  message: string;
+  result?: DominoResyncResult;
+  error?: string;
+}
+
+export async function startDominoResyncXlsm(forceOverwrite = true): Promise<DominoResyncStartResult> {
+  return apiFetch<DominoResyncStartResult>(
+    `/api/domino/resync-xlsm/start?force_overwrite=${forceOverwrite}`,
+    { method: "POST" }
+  );
+}
+
+export async function getDominoResyncStatus(jobId: string): Promise<DominoResyncJobStatus> {
+  return apiFetch<DominoResyncJobStatus>(`/api/domino/resync-xlsm/status/${encodeURIComponent(jobId)}`);
+}
+
+export interface RestoreXlsmResult {
+  message: string;
+  target: string;
+  backup: string;
+}
+
+export async function restoreTresorerieLastGood(): Promise<RestoreXlsmResult> {
+  return apiFetch<RestoreXlsmResult>("/api/export/tresorerie/restore-lastgood", {
+    method: "POST",
+  });
+}
+
+export interface DominoJsonImportResult {
+  message: string;
+  mode: "merge" | "replace";
+  imported: number;
+  total: number;
+}
+
+export async function importDominoJson(file: File, mode: "merge" | "replace" = "merge"): Promise<DominoJsonImportResult> {
+  const form = new FormData();
+  form.append("file", file);
+  return apiFetch<DominoJsonImportResult>(`/api/domino/import-json?mode=${mode}`, {
+    method: "POST",
+    body: form,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Automatisation — tâches planifiées
+// ---------------------------------------------------------------------------
+
+export interface AutomationTask {
+  id: string;
+  label: string;
+  description: string;
+  interval_seconds: number;
+  enabled: boolean;
+  is_running: boolean;
+  last_start: string | null;
+  last_end: string | null;
+  last_status: string;
+  last_error: string | null;
+  run_count: number;
+  error_count: number;
+  next_run: string | null;
+}
+
+export interface AutomationLog {
+  timestamp: string;
+  task_id: string;
+  level: "info" | "warn" | "error";
+  message: string;
+  details: Record<string, unknown>;
+}
+
+export async function fetchAutomationTasks(): Promise<AutomationTask[]> {
+  return apiFetch<AutomationTask[]>("/api/automation/tasks");
+}
+
+export async function fetchAutomationLogs(taskId?: string, limit = 200): Promise<AutomationLog[]> {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  if (taskId) params.set("task_id", taskId);
+  return apiFetch<AutomationLog[]>(`/api/automation/logs?${params.toString()}`);
+}
+
+export async function startAutomationTask(taskId: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/api/automation/tasks/${encodeURIComponent(taskId)}/start`, { method: "POST" });
+}
+
+export async function stopAutomationTask(taskId: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/api/automation/tasks/${encodeURIComponent(taskId)}/stop`, { method: "POST" });
+}
+
+export async function runAutomationTaskNow(taskId: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/api/automation/tasks/${encodeURIComponent(taskId)}/run-now`, { method: "POST" });
+}

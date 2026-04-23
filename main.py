@@ -7,6 +7,7 @@ from langchain_openai import ChatOpenAI
 from openai import OpenAI
 import os
 import re
+from xlsm_safe import atomic_save_workbook
 
 try:
     from markitdown import MarkItDown
@@ -827,7 +828,8 @@ def write_to_achats_cons(
         )
         inserted += 1
 
-    wb.save(output_path)
+    atomic_save_workbook(wb, output_path)
+    wb.close()
     return inserted
 
 

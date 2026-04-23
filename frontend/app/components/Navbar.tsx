@@ -59,6 +59,8 @@ export default function Navbar() {
           {navLink("/", "Dashboard")}
           {navLink("/factures", "Factures")}
           {navLink("/bons-livraison", "Bons de livraison")}
+          {navLink("/domino", "DOMINO")}
+          {navLink("/automatisation", "Automatisation")}
           <a
             href="/fournisseurs"
             className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
