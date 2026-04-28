@@ -236,8 +236,31 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 def is_database_empty() -> bool:
     """
-    True si aucune des tables principales ne contient de données.
-    Utilisé par le seeder pour décider de remplir depuis le XLSM.
+    True si TOUTES les tables principales sont vides.
+    Conservé pour compatibilité ascendante — préférer les helpers granulaires
+    `is_table_empty()` ou `tables_empty_status()`.
+    """
+    return all(tables_empty_status().values())
+
+
+def is_table_empty(table: str) -> bool:
+    """
+    True si la table donnée ne contient aucune ligne.
+
+    Tables valides : 'factures', 'bons_livraison', 'domino_jours', 'autres_achats', 'fournisseurs'.
+    """
+    _allowed = {"factures", "bons_livraison", "domino_jours", "autres_achats", "fournisseurs"}
+    if table not in _allowed:
+        raise ValueError(f"Table inconnue : {table!r}. Valeurs autorisées : {_allowed}")
+    conn = get_conn()
+    row = conn.execute(f"SELECT COUNT(1) FROM {table}").fetchone()
+    return row[0] == 0
+
+
+def tables_empty_status() -> dict[str, bool]:
+    """
+    Retourne un dict {nom_table: is_empty} pour chaque table principale.
+    Permet au seeder de décider table par table ce qui doit être peuplé.
     """
     conn = get_conn()
     cur = conn.execute(
@@ -245,10 +268,17 @@ def is_database_empty() -> bool:
         "  (SELECT COUNT(1) FROM factures)        AS nb_factures, "
         "  (SELECT COUNT(1) FROM bons_livraison)  AS nb_bons, "
         "  (SELECT COUNT(1) FROM domino_jours)    AS nb_domino, "
-        "  (SELECT COUNT(1) FROM autres_achats)   AS nb_autres"
+        "  (SELECT COUNT(1) FROM autres_achats)   AS nb_autres, "
+        "  (SELECT COUNT(1) FROM fournisseurs)    AS nb_fournisseurs"
     )
     row = cur.fetchone()
-    return all(row[k] == 0 for k in ("nb_factures", "nb_bons", "nb_domino", "nb_autres"))
+    return {
+        "factures":       row["nb_factures"]      == 0,
+        "bons_livraison": row["nb_bons"]           == 0,
+        "domino_jours":   row["nb_domino"]         == 0,
+        "autres_achats":  row["nb_autres"]         == 0,
+        "fournisseurs":   row["nb_fournisseurs"]   == 0,
+    }
 
 
 def get_schema_version() -> int:

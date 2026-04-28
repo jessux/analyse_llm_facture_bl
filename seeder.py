@@ -371,38 +371,69 @@ def seed_domino(json_path: str = DEFAULT_DOMINO_JSON) -> int:
 
 def seed_if_empty(xlsm_path: str | None = None) -> dict:
     """
-    Seed la BDD si elle est vide. Retourne un résumé des opérations.
+    Seed chaque table de la BDD **indépendamment** si elle est vide.
+
+    Contrairement à l'ancienne logique (tout-ou-rien), cette version vérifie
+    table par table : une table déjà peuplée est ignorée, une table vide est
+    seedée même si les autres ne le sont pas.
+
+    Retourne un résumé des opérations avec le détail par table.
     """
     db.get_conn()  # init schéma
-    if not db.is_database_empty():
-        return {"seeded": False, "reason": "database non vide"}
+
+    empty = db.tables_empty_status()
+
+    # Si absolument tout est déjà peuplé, on sort rapidement
+    if not any(empty.values()):
+        return {"seeded": False, "reason": "toutes les tables sont déjà peuplées"}
 
     path = xlsm_path or _xlsm_path()
-    nb_fournisseurs = seed_fournisseurs(path)
-
-    nb_f, nb_b = (0, 0)
-    nb_autres = 0
-    if path:
-        try:
-            nb_f, nb_b = seed_achats_cons(path)
-        except Exception as e:
-            print(f"[SEED] Erreur Achats Cons: {e}")
-        try:
-            nb_autres = seed_autres_achats(path)
-        except Exception as e:
-            print(f"[SEED] Erreur Autres achats: {e}")
-
-    nb_domino = seed_domino()
-
-    return {
+    summary: dict = {
         "seeded": True,
         "xlsm_path": path,
-        "fournisseurs": nb_fournisseurs,
-        "factures": nb_f,
-        "bons": nb_b,
-        "autres_achats": nb_autres,
-        "domino_jours": nb_domino,
+        "fournisseurs": 0,
+        "factures": 0,
+        "bons": 0,
+        "autres_achats": 0,
+        "domino_jours": 0,
+        "skipped": [],
     }
+
+    # --- Fournisseurs (prérequis des autres tables) ---
+    if empty["fournisseurs"]:
+        summary["fournisseurs"] = seed_fournisseurs(path)
+    else:
+        summary["skipped"].append("fournisseurs")
+
+    if path:
+        # --- Factures + BL ---
+        if empty["factures"] or empty["bons_livraison"]:
+            try:
+                nb_f, nb_b = seed_achats_cons(path)
+                summary["factures"] = nb_f
+                summary["bons"] = nb_b
+            except Exception as e:
+                print(f"[SEED] Erreur Achats Cons: {e}")
+        else:
+            summary["skipped"].append("factures")
+            summary["skipped"].append("bons_livraison")
+
+        # --- Autres achats ---
+        if empty["autres_achats"]:
+            try:
+                summary["autres_achats"] = seed_autres_achats(path)
+            except Exception as e:
+                print(f"[SEED] Erreur Autres achats: {e}")
+        else:
+            summary["skipped"].append("autres_achats")
+
+    # --- DOMINO ---
+    if empty["domino_jours"]:
+        summary["domino_jours"] = seed_domino()
+    else:
+        summary["skipped"].append("domino_jours")
+
+    return summary
 
 
 if __name__ == "__main__":
