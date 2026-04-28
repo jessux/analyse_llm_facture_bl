@@ -33,6 +33,7 @@ import domino as domino_module
 import db
 import repositories as repo
 from seeder import seed_if_empty
+from exporter import export_to_xlsm
 
 # Dossier de stockage persistant des PDFs importés
 STORAGE_DIR = "storage"
@@ -988,6 +989,39 @@ def export_tresorerie():
     }
 
 
+@app.post("/api/export/full", summary="Export complet BDD → XLSM (tous les onglets)")
+def export_full():
+    """
+    Régénère le fichier XLSM depuis la BDD SQLite en mettant à jour
+    tous les onglets gérés par l'application :
+    - Achats Cons   : factures + bons de livraison
+    - Autres achats : autres achats
+    - DOMINO        : données journalières DOMINO
+    - Inputs        : liste des fournisseurs
+
+    Sauvegarde atomique avec backup .lastgood.bak automatique.
+    """
+    active_xlsm = _ensure_valid_tresorerie_path()
+    try:
+        with _xlsm_write_lock:
+            result = export_to_xlsm(output_path=active_xlsm)
+    except HTTPException:
+        raise
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}".rstrip(": ")
+        raise HTTPException(status_code=500, detail=f"Export complet impossible: {err}")
+
+    return {
+        "message": "Export complet effectué.",
+        "fichier": os.path.basename(active_xlsm),
+        "achats_cons_lignes": result.get("achats_cons_lignes", 0),
+        "autres_achats_lignes": result.get("autres_achats_lignes", 0),
+        "domino_jours": result.get("domino_jours", 0),
+        "inputs_fournisseurs": result.get("inputs_fournisseurs", 0),
+        "erreurs": result.get("errors", []),
+    }
+
+
 @app.post("/api/export/tresorerie/restore-lastgood", summary="Restaurer le XLSM depuis la backup last-good")
 def restore_tresorerie_lastgood():
     """Restaure le fichier xlsm principal/fallback à partir de la backup .lastgood.bak."""
@@ -1353,8 +1387,11 @@ def _relink_store() -> None:
 
 def _regenerate_excel():
     """
-    Persiste l'état de la BDD dans l'onglet 'Achats Cons' du fichier xlsm cible.
-    Les lignes des fournisseurs MLC sont écrasées ; les autres sont conservées.
+    Persiste l'état complet de la BDD dans le fichier xlsm cible :
+    - Onglet 'Achats Cons'  : factures + BL
+    - Onglet 'Autres achats': autres achats
+    - Onglet 'DOMINO'       : données journalières DOMINO
+    - Onglet 'Inputs'       : liste des fournisseurs
     """
     active_xlsm = _pick_valid_tresorerie_path()
     if not active_xlsm:
@@ -1365,19 +1402,17 @@ def _regenerate_excel():
         return
 
     try:
-        factures = repo.list_factures()
-        bons     = repo.list_bons()
         with _xlsm_write_lock:
-            write_to_achats_cons(
-                factures=factures,
-                bons=bons,
-                template_path=active_xlsm,
-                output_path=active_xlsm,
-                fournisseur_display=repo.fournisseur_display_map(),
-            )
+            result = export_to_xlsm(output_path=active_xlsm)
+        print(
+            f"[XLSM] Export complet : {result.get('achats_cons_lignes')} ligne(s) Achats Cons, "
+            f"{result.get('autres_achats_lignes')} Autres achats, "
+            f"{result.get('domino_jours')} jour(s) DOMINO, "
+            f"{result.get('inputs_fournisseurs')} fournisseur(s) Inputs."
+        )
     except Exception as e:
         err = f"{type(e).__name__}: {e}".rstrip(": ")
-        print(f"[WARN] _regenerate_excel : erreur lors de l'ecriture dans le xlsm : {err}")
+        print(f"[WARN] _regenerate_excel : erreur lors de l'export complet : {err}")
 
 
 def _schedule_regenerate_excel() -> None:

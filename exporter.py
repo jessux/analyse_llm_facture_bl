@@ -69,14 +69,15 @@ def export_to_xlsm(output_path: str = CURRENT_XLSM_PATH) -> dict:
             achats_lignes = 0
             print(f"[WARN] Achats Cons: {e}")
         
-        # Injecter les autres onglets
+        # Injecter les autres onglets puis sauvegarder atomiquement
         wb = openpyxl.load_workbook(tmp_path, keep_vba=True)
         try:
             stats = _inject_other_sheets(wb)
             stats["achats_cons_lignes"] = achats_lignes
+            atomic_save_workbook(wb, output_path)
         finally:
             wb.close()
-        
+
         return {
             "status": "success",
             "output_file": output_path,
@@ -171,11 +172,13 @@ def _row_to_domino_jour(row: dict) -> domino.DominoJourData:
 
 
 def _inject_autres_achats(ws) -> int:
-    """Injecte les données Autres achats dans la feuille."""
+    """
+    Injecte les données Autres achats dans la feuille.
+    Nettoie d'abord toutes les anciennes lignes de données avant de réécrire,
+    pour éviter les doublons ou les lignes fantômes après suppression en BDD.
+    """
     autres_achats = repo.list_autres_achats()
-    if not autres_achats:
-        return 0
-    
+
     # Chercher la ligne d'en-tête
     header_row = None
     for row_idx in range(1, min(10, ws.max_row + 1)):
@@ -183,12 +186,20 @@ def _inject_autres_achats(ws) -> int:
         if cell_val and "Fournisseur" in str(cell_val):
             header_row = row_idx
             break
-    
+
     if header_row is None:
         header_row = 1
-    
-    # Écrire à partir de la ligne suivante
+
     data_start_row = header_row + 1
+
+    # Nettoyer toutes les anciennes lignes de données (colonnes A à AA)
+    for row_idx in range(data_start_row, ws.max_row + 1):
+        for col_idx in range(1, 28):
+            ws.cell(row_idx, col_idx).value = None
+
+    if not autres_achats:
+        return 0
+
     col_mapping = {
         "fournisseur": 1,
         "categorie": 2,
@@ -205,14 +216,14 @@ def _inject_autres_achats(ws) -> int:
         "amortissable": 26,
         "ref_denotage": 27,
     }
-    
+
     for idx, achat in enumerate(autres_achats):
         row_idx = data_start_row + idx
         for field, col_idx in col_mapping.items():
             value = achat.get(field)
             if value is not None:
                 ws.cell(row_idx, col_idx).value = value
-    
+
     return len(autres_achats)
 
 
