@@ -116,6 +116,7 @@ schema_meta (
   - Endpoints branchés sur les repos
   - Conservation de la régénération XLSM via le nouvel exporter
 - [x] **Étape 5** — Refactor `domino.py` : passage de `output/domino_imports.json` à SQLite (avec migration auto + fallback lecture JSON pour la 1ʳᵉ exécution)
+- [x] **Étape 6** — Exporter : copie `template.xlsm` → injection des onglets `Achats Cons`, `DOMINO`, `Autres achats`, `Inputs` → sauvegarde atomique
 - [ ] **Étape 6** — Exporter : copie `template.xlsm` → injection des onglets `Achats Cons`, `DOMINO`, `Autres achats`, `Inputs` → sauvegarde atomique
 - [ ] **Étape 7** — (Optionnel) endpoints CRUD + UI pour `Autres achats`
 - [ ] **Étape 8** — Tests d'intégration + nettoyage des chemins morts
