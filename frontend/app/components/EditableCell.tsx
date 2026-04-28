@@ -33,7 +33,9 @@ export default function EditableCell({
   const [draft, setDraft]       = useState("");
   const [saving, setSaving]     = useState(false);
   const [error, setError]       = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement | HTMLSelectElement>(null);
+  // On utilise deux refs séparées pour éviter le type union non standard
+  const inputRef  = useRef<HTMLInputElement>(null);
+  const selectRef = useRef<HTMLSelectElement>(null);
 
   // Convertit la valeur courante en string pour l'input
   const toInputValue = useCallback((v: string | number | null): string => {
@@ -56,7 +58,10 @@ export default function EditableCell({
   // Focus auto dès que l'input apparaît
   useEffect(() => {
     if (editing) {
-      setTimeout(() => inputRef.current?.focus(), 0);
+      setTimeout(() => {
+        inputRef.current?.focus();
+        selectRef.current?.focus();
+      }, 0);
     }
   }, [editing]);
 
@@ -136,7 +141,7 @@ export default function EditableCell({
       <div className="flex items-center gap-1">
         {type === "select" ? (
           <select
-            ref={inputRef as React.RefObject<HTMLSelectElement>}
+            ref={selectRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}
@@ -150,7 +155,7 @@ export default function EditableCell({
           </select>
         ) : (
           <input
-            ref={inputRef as React.RefObject<HTMLInputElement>}
+            ref={inputRef}
             type={type === "date" ? "date" : type === "number" ? "number" : "text"}
             step={type === "number" ? "0.01" : undefined}
             value={draft}

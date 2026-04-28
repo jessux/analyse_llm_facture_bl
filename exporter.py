@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
 import tempfile
 import zipfile
@@ -137,7 +138,8 @@ def _build_sheet_xml(populate_fn, header_rows_xml: list[bytes] | None = None) ->
     wb.close()
     buf.seek(0)
 
-    raw_xml = zipfile.ZipFile(buf, "r").read("xl/worksheets/sheet1.xml")
+    with zipfile.ZipFile(buf, "r") as zf:
+        raw_xml = zf.read("xl/worksheets/sheet1.xml")
 
     if not header_rows_xml:
         return raw_xml
@@ -151,7 +153,6 @@ def _build_sheet_xml(populate_fn, header_rows_xml: list[bytes] | None = None) ->
         return raw_xml
 
     # Renuméroter toutes les lignes de données (r + références cellules)
-    import re as _re
     for row_elem in sheet_data.findall(f"{{{ns_str}}}row"):
         old_r = int(row_elem.get("r", "1"))
         new_r = old_r + offset
@@ -159,7 +160,7 @@ def _build_sheet_xml(populate_fn, header_rows_xml: list[bytes] | None = None) ->
         for cell in row_elem.findall(f"{{{ns_str}}}c"):
             ref = cell.get("r", "")
             # Ref format : lettre(s) + chiffre(s), ex: "A1", "BC12"
-            new_ref = _re.sub(r"(\d+)$", str(new_r), ref)
+            new_ref = re.sub(r"(\d+)$", str(new_r), ref)
             cell.set("r", new_ref)
 
     # Insérer les lignes header au début du sheetData

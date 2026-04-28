@@ -87,15 +87,15 @@ export default function DominoPage() {
       const [f, d] = await Promise.all([fetchDominoFiles(), fetchDominoData()]);
       setFiles(f);
       setImports(d);
-      if (!selectedDate && d.length > 0) {
-        setSelectedDate(d[0].data.date);
-      }
+      // Utilise le setter fonctionnel pour éviter selectedDate dans les dépendances
+      // (évite les rechargements en boucle à chaque changement de date sélectionnée)
+      setSelectedDate((prev) => prev ?? (d.length > 0 ? d[0].data.date : null));
     } catch (e) {
       setFlash({ type: "err", msg: `Erreur chargement : ${e}` });
     } finally {
       setLoading(false);
     }
-  }, [selectedDate]);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
 

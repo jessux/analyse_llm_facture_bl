@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   fetchAutomationTasks,
@@ -34,7 +34,7 @@ export default function AutomatisationPage() {
   const [logFilter, setLogFilter] = useState<string>("all");
   const [flash, setFlash] = useState<{ type: "ok" | "err"; msg: string } | null>(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const [t, l] = await Promise.all([
         fetchAutomationTasks(),
@@ -47,18 +47,16 @@ export default function AutomatisationPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [logFilter]);
 
   useEffect(() => {
     load();
-  }, [logFilter]);
+  }, [load]);
 
   useEffect(() => {
-    const id = setInterval(() => {
-      load();
-    }, 4000);
+    const id = setInterval(() => { load(); }, 4000);
     return () => clearInterval(id);
-  }, [logFilter]);
+  }, [load]);
 
   const doAction = async (taskId: string, action: "start" | "stop" | "run") => {
     setBusyTask(taskId + ":" + action);

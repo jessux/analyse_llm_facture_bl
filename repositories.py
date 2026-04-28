@@ -635,7 +635,6 @@ def relink_all() -> None:
     Réindexe les rattachements BL ↔ Factures depuis la liste `bons_livraisons`
     déclarée sur les factures.
     """
-    conn = get_conn()
     factures_with_bls: list[tuple[str, list[str]]] = []
     for f in list_factures():
         if f.get("bons_livraisons"):

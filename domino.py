@@ -26,7 +26,6 @@ from typing import Optional, Any
 
 import openpyxl
 from xlsm_safe import atomic_save_workbook
-import db
 import repositories as repo
 
 DOMINO_FOLDER = "test_domino"

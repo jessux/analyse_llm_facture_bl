@@ -5,10 +5,9 @@ interface StatCardProps {
   value: string | number;
   sub?: string;
   icon: ReactNode;
-  trend?: "up" | "down" | "neutral";
 }
 
-export default function StatCard({ label, value, sub, icon, trend }: StatCardProps) {
+export default function StatCard({ label, value, sub, icon }: StatCardProps) {
   return (
     <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-5 flex flex-col gap-4 hover:shadow-sm transition-shadow">
       <div className="flex items-start justify-between">

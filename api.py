@@ -24,11 +24,8 @@ from main import (
     finalize_document_data,
     link_documents,
     write_to_achats_cons,
-    FOURNISSEUR_DISPLAY,
     llm,
 )
-import openpyxl
-from openpyxl import load_workbook
 import domino as domino_module
 import db
 import repositories as repo
@@ -732,7 +729,6 @@ BON_EDITABLE_FIELDS = {
 class PatchFacture(BaseModel):
     date_emission:        str | None = None
     date_paiement_prevue: str | None = None
-    montant_total:        float | None = None
     prix_HT_5_5pct:       float | None = None
     prix_HT_10pct:        float | None = None
     prix_HT_20pct:        float | None = None
@@ -742,7 +738,6 @@ class PatchFacture(BaseModel):
 
 class PatchBon(BaseModel):
     date_livraison:       str | None = None
-    montant_total:        float | None = None
     prix_HT_5_5pct:       float | None = None
     prix_HT_10pct:        float | None = None
     prix_HT_20pct:        float | None = None
@@ -1085,7 +1080,7 @@ def automation_list_logs(task_id: str | None = None, limit: int = 200):
     with _automation_lock:
         logs = list(_automation_logs)
     if task_id:
-        logs = [l for l in logs if l.get("task_id") == task_id]
+        logs = [log for log in logs if log.get("task_id") == task_id]
     return logs[-lim:]
 
 
@@ -1408,11 +1403,6 @@ def _deserialize_record(record: dict) -> dict:
             except ValueError:
                 pass
     return out
-
-
-def _relink_store() -> None:
-    """Compat. délègue à repo.relink_all()."""
-    repo.relink_all()
 
 
 def _regenerate_excel():

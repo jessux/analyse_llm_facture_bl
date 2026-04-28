@@ -23,15 +23,18 @@ export default function Badge({ label, variant = "neutral" }: BadgeProps) {
   );
 }
 
+// Palette de variantes cycliques pour les fournisseurs dynamiques
+const SUPPLIER_VARIANTS: BadgeVariant[] = ["info", "success", "warning", "error", "neutral"];
+
+function variantForSupplier(name: string): BadgeVariant {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return SUPPLIER_VARIANTS[Math.abs(hash) % SUPPLIER_VARIANTS.length];
+}
+
 export function supplierBadge(name: string | null) {
   if (!name) return <Badge label="—" variant="neutral" />;
-  // Couleurs fixes pour les fournisseurs historiques, neutral pour les nouveaux
-  const map: Record<string, BadgeVariant> = {
-    SYSCO: "info",
-    AMBELYS: "success",
-    TERREAZUR: "warning",
-  };
-  return <Badge label={name} variant={map[name] ?? "neutral"} />;
+  return <Badge label={name} variant={variantForSupplier(name)} />;
 }
 
 export function typeBadge(type: string | null) {
