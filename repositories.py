@@ -772,6 +772,55 @@ def insert_autre_achat(data: dict) -> int:
         return int(cur.lastrowid or 0)
 
 
+def get_autre_achat(achat_id: int) -> dict | None:
+    """Récupère une ligne d'autres achats par son id."""
+    cur = get_conn().execute("SELECT * FROM autres_achats WHERE id = ?", (achat_id,))
+    r = cur.fetchone()
+    return dict(r) if r else None
+
+
+def update_autre_achat(achat_id: int, updates: dict) -> dict | None:
+    """Met à jour une ligne d'autres achats."""
+    achat = get_autre_achat(achat_id)
+    if not achat:
+        return None
+    
+    # Construire les colonnes à mettre à jour (sauf id, created_at)
+    set_clauses = []
+    values = []
+    for key, val in updates.items():
+        if key not in ("id", "created_at"):
+            set_clauses.append(f"{key} = ?")
+            if key in ("date", "date_paiement"):
+                values.append(_date_to_iso(val))
+            elif key in ("ht_0", "ht_2_1", "ht_5_5", "ht_10", "ht_20"):
+                values.append(_to_float(val))
+            else:
+                values.append(val)
+    
+    if not set_clauses:
+        return achat
+    
+    set_clauses.append("updated_at = ?")
+    values.append(now_iso())
+    values.append(achat_id)
+    
+    with transaction() as conn:
+        conn.execute(
+            f"UPDATE autres_achats SET {', '.join(set_clauses)} WHERE id = ?",
+            values,
+        )
+    
+    return get_autre_achat(achat_id)
+
+
+def delete_autre_achat(achat_id: int) -> bool:
+    """Supprime une ligne d'autres achats."""
+    with transaction() as conn:
+        cur = conn.execute("DELETE FROM autres_achats WHERE id = ?", (achat_id,))
+        return cur.rowcount > 0
+
+
 def list_autres_achats() -> list[dict]:
     cur = get_conn().execute(
         "SELECT * FROM autres_achats ORDER BY date, fournisseur, id"

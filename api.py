@@ -1244,6 +1244,92 @@ def domino_resync_xlsm_status(job_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Autres achats
+# ---------------------------------------------------------------------------
+
+class AutreAchatCreate(BaseModel):
+    fournisseur: str
+    categorie: str | None = None
+    num_facture: str | None = None
+    num_bl: str | None = None
+    date: str | None = None
+    ht_0: float | None = None
+    ht_2_1: float | None = None
+    ht_5_5: float | None = None
+    ht_10: float | None = None
+    ht_20: float | None = None
+    conditions: str | None = None
+    date_paiement: str | None = None
+    amortissable: str | None = None
+    ref_denotage: str | None = None
+
+
+class AutreAchatUpdate(BaseModel):
+    fournisseur: str | None = None
+    categorie: str | None = None
+    num_facture: str | None = None
+    num_bl: str | None = None
+    date: str | None = None
+    ht_0: float | None = None
+    ht_2_1: float | None = None
+    ht_5_5: float | None = None
+    ht_10: float | None = None
+    ht_20: float | None = None
+    conditions: str | None = None
+    date_paiement: str | None = None
+    amortissable: str | None = None
+    ref_denotage: str | None = None
+
+
+@app.get("/api/autres-achats", summary="Lister les autres achats")
+def list_autres_achats_endpoint():
+    """Retourne toutes les lignes d'autres achats."""
+    return repo.list_autres_achats()
+
+
+@app.post("/api/autres-achats", summary="Ajouter un autre achat", status_code=201)
+def create_autre_achat_endpoint(body: AutreAchatCreate):
+    """Crée une nouvelle ligne d'autres achats."""
+    achat_id = repo.insert_autre_achat(body.model_dump())
+    achat = repo.get_autre_achat(achat_id)
+    return achat or {"id": achat_id}
+
+
+@app.get("/api/autres-achats/{achat_id}", summary="Récupérer un autre achat")
+def get_autre_achat_endpoint(achat_id: int):
+    """Retourne les détails d'une ligne d'autres achats."""
+    achat = repo.get_autre_achat(achat_id)
+    if not achat:
+        raise HTTPException(status_code=404, detail=f"Autre achat {achat_id} introuvable.")
+    return achat
+
+
+@app.patch("/api/autres-achats/{achat_id}", summary="Modifier un autre achat")
+def update_autre_achat_endpoint(achat_id: int, body: AutreAchatUpdate):
+    """Met à jour les champs d'une ligne d'autres achats."""
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        achat = repo.get_autre_achat(achat_id)
+        if not achat:
+            raise HTTPException(status_code=404, detail=f"Autre achat {achat_id} introuvable.")
+        return achat
+    
+    updated = repo.update_autre_achat(achat_id, updates)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Autre achat {achat_id} introuvable.")
+    return updated
+
+
+@app.delete("/api/autres-achats/{achat_id}", summary="Supprimer un autre achat")
+def delete_autre_achat_endpoint(achat_id: int):
+    """Supprime une ligne d'autres achats."""
+    deleted = repo.delete_autre_achat(achat_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Autre achat {achat_id} introuvable.")
+    return {"message": f"Autre achat {achat_id} supprimé."}
+
+
+# ---------------------------------------------------------------------------
 # Helpers internes
 # ---------------------------------------------------------------------------
 
