@@ -76,7 +76,7 @@ export default function ModalRattachement({
       setError(null);
       try {
         if (initMode.current === "facture_vers_bl") {
-          const bons = await fetchBonsLivraison();
+          const { items: bons } = await fetchBonsLivraison();
           if (cancelled) return;
           setOptions(
             bons
@@ -84,7 +84,7 @@ export default function ModalRattachement({
               .filter((n): n is string => !!n && !initBlRattaches.current.includes(n))
           );
         } else {
-          const factures = await fetchFactures();
+          const { items: factures } = await fetchFactures();
           if (cancelled) return;
           setOptions(
             factures
