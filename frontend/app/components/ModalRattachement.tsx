@@ -138,9 +138,12 @@ export default function ModalRattachement({
     setError(null);
     try {
       if (mode === "facture_vers_bl") {
+        // numeroSource = numéro de la facture, numeroBL = BL à détacher
         await supprimerRattachement(numeroSource, numeroBL);
       } else {
-        await supprimerRattachement(selected ?? numeroBL, numeroSource);
+        // numeroSource = numéro du BL, factureRattachee = facture liée
+        const numeroFacture = factureRattachee ?? numeroBL;
+        await supprimerRattachement(numeroFacture, numeroSource);
       }
       onSuccess();
       onClose();

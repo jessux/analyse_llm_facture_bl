@@ -601,7 +601,7 @@ async def upload_documents(files: list[UploadFile] = File(...)):
         "records":  [],  # liste des records extraits avec leur type et action
     }
     tmp_dir = tempfile.mkdtemp()
-    loop    = asyncio.get_event_loop()
+    loop    = asyncio.get_running_loop()
 
     try:
         # 1. Sauvegarde des fichiers : tmp_dir pour le traitement LLM,
@@ -961,21 +961,25 @@ def download_tresorerie():
 
 
 @app.post("/api/export/tresorerie", summary="Générer le fichier Suivi Trésorerie MLC.xlsm")
-def export_tresorerie():
-    """Force la régénération du xlsm depuis la BDD SQLite."""
+async def export_tresorerie():
+    """Force la régénération du xlsm depuis la BDD SQLite (onglet Achats Cons uniquement)."""
     active_xlsm = _ensure_valid_tresorerie_path()
 
-    try:
+    def _run() -> int:
         factures = repo.list_factures()
         bons = repo.list_bons()
         with _xlsm_write_lock:
-            lignes_inserees = write_to_achats_cons(
+            return write_to_achats_cons(
                 factures=factures,
                 bons=bons,
                 template_path=active_xlsm,
                 output_path=active_xlsm,
                 fournisseur_display=repo.fournisseur_display_map(),
             )
+
+    try:
+        loop = asyncio.get_running_loop()
+        lignes_inserees = await loop.run_in_executor(_executor, _run)
     except HTTPException:
         raise
     except Exception as e:
@@ -990,7 +994,7 @@ def export_tresorerie():
 
 
 @app.post("/api/export/full", summary="Export complet BDD → XLSM (tous les onglets)")
-def export_full():
+async def export_full():
     """
     Régénère le fichier XLSM depuis la BDD SQLite en mettant à jour
     tous les onglets gérés par l'application :
@@ -1000,11 +1004,18 @@ def export_full():
     - Inputs        : liste des fournisseurs
 
     Sauvegarde atomique avec backup .lastgood.bak automatique.
+    L'export openpyxl étant bloquant, il est exécuté dans le thread pool
+    pour ne pas bloquer la boucle asyncio (évite le socket hang up).
     """
     active_xlsm = _ensure_valid_tresorerie_path()
-    try:
+
+    def _run_export() -> dict:
         with _xlsm_write_lock:
-            result = export_to_xlsm(output_path=active_xlsm)
+            return export_to_xlsm(output_path=active_xlsm)
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(_executor, _run_export)
     except HTTPException:
         raise
     except Exception as e:

@@ -4,7 +4,7 @@ const API_BASE = "/backend";
 // Types
 // ---------------------------------------------------------------------------
 
-export type FournisseurKey = ""
+export type FournisseurKey = string;
 export const FOURNISSEURS: FournisseurKey[] = [];
 
 export interface Facture {
@@ -173,14 +173,18 @@ export async function deleteFournisseur(id: string): Promise<void> {
   });
 }
 
-export interface ExportTresorerieResult {
-  lignes_inserees: number;
-  fichier: string;
+export interface ExportFullResult {
   message: string;
+  fichier: string;
+  achats_cons_lignes: number;
+  autres_achats_lignes: number;
+  domino_jours: number;
+  inputs_fournisseurs: number;
+  erreurs: string[];
 }
 
-export async function exportTresorerie(): Promise<ExportTresorerieResult> {
-  return apiFetch<ExportTresorerieResult>("/api/export/tresorerie", {
+export async function exportFull(): Promise<ExportFullResult> {
+  return apiFetch<ExportFullResult>("/api/export/full", {
     method: "POST",
   });
 }

@@ -7,7 +7,7 @@ import { DownloadIcon, SpinnerIcon } from "./Icons";
 import {
   fetchFactures,
   fetchFournisseurs,
-  exportTresorerie, getTresorerieDownloadUrl,
+  exportFull, getTresorerieDownloadUrl,
   getPdfUrl, patchFacture,
   type Fournisseur,
   type Facture,
@@ -79,7 +79,6 @@ export default function TableauFactures() {
   const [modalFacture, setModalFacture]   = useState<Facture | null>(null);
   const [pdfViewer, setPdfViewer]         = useState<{ url: string; titre: string } | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
-  const [exportResult, setExportResult]   = useState<{ lignes: number } | null>(null);
   const [exportError, setExportError]     = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -127,43 +126,26 @@ export default function TableauFactures() {
             className="px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 text-sm text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
             title="Rafraîchir"
           >↻</button>
-          {!exportResult ? (
-            <button
-              onClick={async () => {
-                setExportLoading(true); setExportError(null);
-                try {
-                  const res = await exportTresorerie();
-                  setExportResult({ lignes: res.lignes_inserees });
-                } catch (err) {
-                  setExportError(err instanceof Error ? err.message : "Erreur export.");
-                } finally { setExportLoading(false); }
-              }}
-              disabled={exportLoading}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-emerald-300 dark:border-emerald-700 text-sm font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-100 dark:hover:bg-emerald-900 disabled:opacity-50 transition-colors"
-            >
-              {exportLoading ? <SpinnerIcon className="w-4 h-4 animate-spin" /> : <DownloadIcon className="w-4 h-4" />}
-              {exportLoading ? "Enregistrement…" : "Enregistrer dans Suivi Trésorerie"}
-            </button>
-          ) : (
-            <a
-              href={getTresorerieDownloadUrl()}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-emerald-300 dark:border-emerald-700 text-sm font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-100 dark:hover:bg-emerald-900 transition-colors"
-              onClick={() => setExportResult(null)}
-            >
-              <DownloadIcon className="w-4 h-4" />
-              Télécharger Suivi Trésorerie.xlsm
-            </a>
-          )}
+          <button
+            onClick={async () => {
+              setExportLoading(true); setExportError(null);
+              try {
+                await exportFull();
+                window.location.href = getTresorerieDownloadUrl();
+              } catch (err) {
+                setExportError(err instanceof Error ? err.message : "Erreur export.");
+              } finally { setExportLoading(false); }
+            }}
+            disabled={exportLoading}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-emerald-300 dark:border-emerald-700 text-sm font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-100 dark:hover:bg-emerald-900 disabled:opacity-50 transition-colors"
+          >
+            {exportLoading ? <SpinnerIcon className="w-4 h-4 animate-spin" /> : <DownloadIcon className="w-4 h-4" />}
+            {exportLoading ? "Export en cours…" : "Exporter le Suivi Trésorerie"}
+          </button>
         </div>
       </div>
 
       {/* Feedback export */}
-      {exportResult && (
-        <div className="flex items-center justify-between rounded-lg bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-400">
-          <span>{exportResult.lignes} ligne(s) enregistrée(s) dans <strong>Achats Cons</strong>.</span>
-          <button onClick={() => setExportResult(null)} className="ml-4 text-emerald-500 hover:text-emerald-700 transition-colors">✕</button>
-        </div>
-      )}
       {exportError && (
         <div className="flex items-center justify-between rounded-lg bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-700 dark:text-red-400">
           <span>❌ {exportError}</span>

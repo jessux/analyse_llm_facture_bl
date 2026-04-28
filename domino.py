@@ -523,7 +523,7 @@ def is_imported(filename: str) -> bool:
     d = _parse_date_from_filename(filename)
     if d is None:
         return False
-    return repo.has_domino_jour(d)
+    return repo.has_domino_jour(d.isoformat())
 
 
 # ---------------------------------------------------------------------------
