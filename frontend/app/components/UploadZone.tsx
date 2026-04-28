@@ -70,10 +70,12 @@ export default function UploadZone({ onSuccess }: UploadZoneProps) {
       setResult(res);
       const errorFiles    = new Set(res.erreurs.map((e) => e.fichier));
       const rejectedFiles = new Set(res.rejetes?.map((r) => r.fichier) ?? []);
-      const updatedFiles  = new Set([
-        // on ne peut pas savoir par fichier si c'est updated sans info supplémentaire
-        // on marque "updated" si le fichier n'est ni en erreur ni rejeté et qu'il y a des updates
-      ]);
+      // Fichiers mis à jour : on lit res.records qui contient action + fichier_stocke
+      const updatedFiles  = new Set(
+        (res.records ?? [])
+          .filter((r) => r.action === "updated" && (r.data as Facture | BonLivraison).fichier_stocke)
+          .map((r) => (r.data as Facture | BonLivraison).fichier_stocke as string)
+      );
       setFiles((prev) =>
         prev.map((f) => ({
           ...f,
@@ -81,6 +83,8 @@ export default function UploadZone({ onSuccess }: UploadZoneProps) {
             ? "error"
             : rejectedFiles.has(f.file.name)
             ? "rejected"
+            : updatedFiles.has(f.file.name)
+            ? "updated"
             : "done",
         }))
       );

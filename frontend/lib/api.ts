@@ -255,6 +255,18 @@ export async function supprimerRattachement(
   );
 }
 
+export async function deleteFacture(numeroFacture: string): Promise<void> {
+  await apiFetch(`/api/factures/${encodeURIComponent(numeroFacture)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function deleteBon(numeroBL: string): Promise<void> {
+  await apiFetch(`/api/bons-livraison/${encodeURIComponent(numeroBL)}`, {
+    method: "DELETE",
+  });
+}
+
 // ---------------------------------------------------------------------------
 // DOMINO — Rapport journalier
 // ---------------------------------------------------------------------------

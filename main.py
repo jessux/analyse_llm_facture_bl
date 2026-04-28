@@ -646,191 +646,28 @@ def write_to_achats_cons(
     fournisseur_display: dict[str, str] | None = None,
 ) -> int:
     """
-    Ouvre le fichier de suivi trésorerie MLC, efface les lignes gérées par
-    l'appli (col C = nos fournisseurs), puis réinsère selon la structure réelle :
-
-      - UNE LIGNE PAR BL : col E = N° BL, col F = date du BL,
-        montants HT portés par le BL (prix_HT_5_5pct / 10pct / 20pct du BL)
-      - Facture sans BL : une seule ligne, col E vide, col F = date_emission,
-        montants HT de la facture
-
-    Colonnes saisies : C (Fournisseur), D (Fact), E (BL), F (Date),
-                       I (HT 5.5), J (HT 10), K (HT 20), S (Date paiement), W (Commentaires)
-    Colonnes formule : A, B, G, H, L, M, N, O, P, Q, R, T, U, V, X, Y
-
-    Retourne le nombre de lignes insérées.
+    Délègue à exporter.py pour éviter la duplication de logique.
+    Conservé pour compatibilité avec les imports existants dans api.py.
     """
-    import openpyxl
-    from openpyxl import load_workbook
-    from datetime import date as _date
-
+    from exporter import (
+        _populate_achats_cons,
+        _build_sheet_xml,
+        _extract_header_rows_xml,
+        _resolve_sheet_zip_paths,
+        _inject_xmls_into_zip,
+    )
     _display = fournisseur_display if fournisseur_display is not None else FOURNISSEUR_DISPLAY
-    MLC_FOURNISSEURS = {v.lower() for v in _display.values()}
+    sheet_paths = _resolve_sheet_zip_paths(template_path)
+    header = _extract_header_rows_xml(template_path, sheet_paths["Achats Cons"], 1)
+    nb = [0]
+    def _fill(ws):
+        nb[0] = _populate_achats_cons(ws, factures, bons, _display)
+    xml = _build_sheet_xml(_fill, header)
+    _inject_xmls_into_zip(output_path, sheet_paths, {"Achats Cons": xml})
+    return nb[0]
 
-    # Index facture → liste de dicts BL complets (avec leurs montants propres)
-    bl_par_facture: dict[str, list[dict]] = {}
-    for bon in bons:
-        fac_num = bon.get("numero_facture_rattachee")
-        bl_num  = bon.get("numero_bon_livraison")
-        if fac_num and bl_num:
-            bl_par_facture.setdefault(str(fac_num), [])
-            if not any(b["numero_bon_livraison"] == bl_num
-                       for b in bl_par_facture[str(fac_num)]):
-                bl_par_facture[str(fac_num)].append(bon)
 
-    wb = load_workbook(template_path, keep_vba=True)
-    ws = wb["Achats Cons"]
 
-    # 1. Effacer les lignes MLC existantes
-    mlc_rows: list[int] = []
-    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
-        cell_c = row[2]
-        if cell_c and str(cell_c).strip().lower() in MLC_FOURNISSEURS:
-            mlc_rows.append(row_idx)
-    for r in mlc_rows:
-        for c in range(1, 26):
-            ws.cell(r, c).value = None
-
-    # 2. Première ligne vide disponible
-    first_empty = 2
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if any(v is not None for v in row):
-            first_empty += 1
-        else:
-            break
-
-    # Helpers
-    def _to_date(v):
-        if v is None:
-            return None
-        if isinstance(v, str):
-            try:
-                return _date.fromisoformat(v)
-            except ValueError:
-                return None
-        if hasattr(v, "date"):
-            return v.date()
-        if isinstance(v, _date):
-            return v
-        return None
-
-    def _to_float(v):
-        if v is None:
-            return None
-        try:
-            f = float(v)
-            return f if f != 0.0 else None
-        except (ValueError, TypeError):
-            return None
-
-    def _write_row(r, fournisseur, num_facture, num_bl,
-                   date_f, ht_55, ht_10, ht_20, date_paiement, commentaire):
-        ws.cell(r, 1).value  = f'=IF(AND(B{r}>=TDB!$B$6,B{r}<=TDB!$D$6),"Oui","")'
-        ws.cell(r, 2).value  = f'=IF(G{r}<10,H{r}&0&G{r},H{r}&G{r})'
-        ws.cell(r, 7).value  = f'=IF(F{r}="","",MONTH(F{r}))'
-        ws.cell(r, 8).value  = f'=IF(F{r}="","",YEAR(F{r}))'
-        ws.cell(r, 12).value = f'=IF(AND(I{r}="",J{r}="",K{r}=""),"",SUM(I{r}:K{r}))'
-        ws.cell(r, 13).value = f'=IF(I{r}="","",I{r}*0.055)'
-        ws.cell(r, 14).value = f'=IF(J{r}="","",J{r}*0.1)'
-        ws.cell(r, 15).value = f'=IF(K{r}="","",K{r}*0.2)'
-        ws.cell(r, 16).value = f'=IF(AND(M{r}="",N{r}="",O{r}=""),"",SUM(M{r}:O{r}))'
-        ws.cell(r, 17).value = f'=IF(AND(L{r}="",P{r}=""),"",L{r}+P{r})'
-        ws.cell(r, 18).value = f'=IFERROR(INDEX(Inputs!$C:$C,MATCH(C{r},Inputs!$B:$B,0)),"")'
-        ws.cell(r, 20).value = f'=IF(I{r}="","",IF(M{r}=0,"",IF(ROUND(M{r}/I{r},3)=0.055,"OK","Erreur")))'
-        ws.cell(r, 21).value = f'=IF(J{r}="","",IF(N{r}=0,"",IF(ROUND(N{r}/J{r},3)=0.1,"OK","Erreur")))'
-        ws.cell(r, 22).value = f'=IF(K{r}="","",IF(O{r}=0,"",IF(ROUND(O{r}/K{r},3)=0.2,"OK","Erreur")))'
-        ws.cell(r, 24).value = f'=S{r}&"-"&C{r}&"-"&TEXT(Q{r},"0.00")'
-        ws.cell(r, 25).value = f'=IFERROR(INDEX(Inputs!$D:$D,MATCH(\'Achats Cons\'!C{r},Inputs!$B:$B,0)),"")'
-        ws.cell(r, 3).value  = fournisseur
-        ws.cell(r, 4).value  = num_facture
-        ws.cell(r, 5).value  = num_bl or None
-        ws.cell(r, 6).value  = date_f
-        ws.cell(r, 9).value  = ht_55
-        ws.cell(r, 10).value = ht_10
-        ws.cell(r, 11).value = ht_20
-        ws.cell(r, 19).value = date_paiement
-        ws.cell(r, 23).value = commentaire or None
-        if date_f:
-            ws.cell(r, 6).number_format = "DD/MM/YYYY"
-        if date_paiement:
-            ws.cell(r, 19).number_format = "DD/MM/YYYY"
-
-    # 3. Insérer : une ligne par BL, ou une ligne par facture sans BL
-    inserted = 0
-    inserted_bl_nums: set[str] = set()
-    factures_ids = {
-        str(f.get("numero_facture"))
-        for f in factures
-        if f.get("numero_facture")
-    }
-
-    for facture in factures:
-        fournisseur_raw = facture.get("nom_fournisseur") or ""
-        fournisseur     = _display.get(fournisseur_raw.upper(), fournisseur_raw)
-        num_facture     = facture.get("numero_facture")
-        date_emission   = _to_date(facture.get("date_emission"))
-        date_paiement   = _to_date(facture.get("date_paiement_prevue"))
-        commentaire     = facture.get("fichier_source") or facture.get("fichier_stocke") or ""
-        bls             = bl_par_facture.get(str(num_facture), []) if num_facture else []
-
-        if bls:
-            # Une ligne par BL — montants portés par le BL
-            for bon in bls:
-                num_bl  = bon.get("numero_bon_livraison")
-                date_bl = _to_date(bon.get("date_livraison")) or date_emission
-                ht_55   = _to_float(bon.get("prix_HT_5_5pct"))
-                ht_10   = _to_float(bon.get("prix_HT_10pct"))
-                ht_20   = _to_float(bon.get("prix_HT_20pct"))
-                _write_row(first_empty + inserted, fournisseur, num_facture, num_bl,
-                           date_bl, ht_55, ht_10, ht_20, date_paiement, commentaire)
-                inserted += 1
-                if num_bl:
-                    inserted_bl_nums.add(str(num_bl))
-        else:
-            # Pas de BL → une seule ligne avec les montants de la facture
-            ht_55 = _to_float(facture.get("prix_HT_5_5pct"))
-            ht_10 = _to_float(facture.get("prix_HT_10pct"))
-            ht_20 = _to_float(facture.get("prix_HT_20pct"))
-            _write_row(first_empty + inserted, fournisseur, num_facture, None,
-                       date_emission, ht_55, ht_10, ht_20, date_paiement, commentaire)
-            inserted += 1
-
-    # 4. Ajouter les BL sans facture (ou rattachés à une facture absente)
-    for bon in bons:
-        num_bl = bon.get("numero_bon_livraison")
-        if not num_bl:
-            continue
-        fac_num = bon.get("numero_facture_rattachee")
-        if str(num_bl) in inserted_bl_nums:
-            continue
-        if fac_num and str(fac_num) in factures_ids:
-            continue
-
-        fournisseur_raw = bon.get("nom_fournisseur") or ""
-        fournisseur = _display.get(str(fournisseur_raw).upper(), fournisseur_raw)
-        date_bl = _to_date(bon.get("date_livraison"))
-        ht_55 = _to_float(bon.get("prix_HT_5_5pct"))
-        ht_10 = _to_float(bon.get("prix_HT_10pct"))
-        ht_20 = _to_float(bon.get("prix_HT_20pct"))
-        commentaire = bon.get("fichier_source") or bon.get("fichier_stocke") or ""
-
-        _write_row(
-            first_empty + inserted,
-            fournisseur,
-            None,
-            num_bl,
-            date_bl,
-            ht_55,
-            ht_10,
-            ht_20,
-            None,
-            commentaire,
-        )
-        inserted += 1
-
-    atomic_save_workbook(wb, output_path)
-    wb.close()
-    return inserted
 
 
 if __name__ == "__main__":

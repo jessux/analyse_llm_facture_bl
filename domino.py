@@ -271,9 +271,6 @@ def parse_domino_file(filepath: str) -> DominoJourData:
 
 def list_domino_files() -> list[dict]:
     """Liste les fichiers .xlsx dans DOMINO_FOLDER avec leur statut d'import depuis la BDD."""
-    # Migration one-time depuis JSON si BDD vide
-    _migrate_from_json_if_needed()
-    
     # Charger les dates importées depuis la BDD
     imported_dates = {row.get("date"): row for row in repo.list_domino_jours()}
     
@@ -301,9 +298,6 @@ def list_domino_files() -> list[dict]:
 
 def get_all_imported_data() -> list[dict]:
     """Retourne toutes les données importées depuis la BDD, triées par date décroissante."""
-    # Migration one-time depuis JSON si BDD vide
-    _migrate_from_json_if_needed()
-    
     domino_rows = repo.list_domino_jours()
     # Récupérer les jours depuis la BDD
     items = []
@@ -319,7 +313,6 @@ def get_all_imported_data() -> list[dict]:
 
 def has_imported_data() -> bool:
     """Indique si la BDD DOMINO contient au moins une entrée."""
-    _migrate_from_json_if_needed()
     return len(repo.list_domino_jours()) > 0
 
 
@@ -355,37 +348,6 @@ def _row_to_dict(row: dict) -> dict:
         "total_clients": row.get("total_clients"),
     }
 
-
-def _migrate_from_json_if_needed() -> None:
-    """
-    Effectue une migration ONE-TIME du JSON domino_imports.json vers la BDD.
-    N'agit que si la BDD est vide et le JSON existe.
-    """
-    # Vérifier si la BDD est vide
-    if len(repo.list_domino_jours()) > 0:
-        return  # Déjà peuplée
-    
-    # Vérifier si le JSON existe
-    if not os.path.exists(DOMINO_IMPORTS_FILE):
-        return
-    
-    # Charger et migrer depuis le JSON
-    try:
-        with open(DOMINO_IMPORTS_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        imports = _normalize_imports_payload(raw)
-        
-        for key, item in imports.items():
-            data_dict = item.get("data")
-            if not data_dict:
-                continue
-            try:
-                domino_data = _data_from_import_dict(data_dict)
-                repo.upsert_domino_jour(domino_data)
-            except Exception as e:
-                print(f"[WARN] Migration DOMINO {key}: {e}")
-    except (json.JSONDecodeError, OSError) as e:
-        print(f"[WARN] Impossible de lire {DOMINO_IMPORTS_FILE} pour migration: {e}")
 
 
 def _load_imports() -> dict:

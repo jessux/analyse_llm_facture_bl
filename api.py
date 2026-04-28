@@ -1040,8 +1040,27 @@ def restore_tresorerie_lastgood():
         return _restore_tresorerie_from_backup()
 
 
+@app.delete("/api/factures/{numero_facture}", summary="Supprimer une facture")
+def delete_facture(numero_facture: str):
+    """Supprime une facture et détache ses BL liés."""
+    if not repo.delete_facture(numero_facture):
+        raise HTTPException(status_code=404, detail=f"Facture '{numero_facture}' introuvable.")
+    _schedule_regenerate_excel()
+    return {"message": f"Facture '{numero_facture}' supprimée."}
+
+
+@app.delete("/api/bons-livraison/{numero_bl}", summary="Supprimer un bon de livraison")
+def delete_bon(numero_bl: str):
+    """Supprime un bon de livraison."""
+    if not repo.delete_bon(numero_bl):
+        raise HTTPException(status_code=404, detail=f"Bon de livraison '{numero_bl}' introuvable.")
+    _schedule_regenerate_excel()
+    return {"message": f"Bon de livraison '{numero_bl}' supprimé."}
+
+
 @app.delete("/api/reset", summary="Réinitialiser les factures et BL en BDD (ne touche pas au xlsm)")
 def reset_store():
+    """Supprime uniquement les factures et bons de livraison (autres_achats et DOMINO conservés)."""
     with db.transaction() as conn:
         conn.execute("DELETE FROM bons_livraison")
         conn.execute("DELETE FROM factures")
