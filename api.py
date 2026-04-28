@@ -31,6 +31,8 @@ import db
 import repositories as repo
 from seeder import seed_if_empty
 from exporter import export_to_xlsm
+from validators import validate_and_sanitize
+import automation_logger
 
 # Dossier de stockage persistant des PDFs importés
 STORAGE_DIR = os.getenv("MARJO_STORAGE_DIR", "storage")
@@ -65,7 +67,6 @@ _regen_running = False
 _domino_resync_jobs: dict[str, dict] = {}
 _domino_resync_jobs_lock = threading.Lock()
 _automation_tasks: dict[str, dict[str, Any]] = {}
-_automation_logs: list[dict[str, Any]] = []
 _automation_lock = threading.Lock()
 _automation_scheduler_started = False
 
@@ -196,18 +197,7 @@ def _now_iso() -> str:
 
 
 def _add_automation_log(task_id: str, level: Literal["info", "warn", "error"], message: str, details: dict | None = None) -> None:
-    entry = {
-        "timestamp": _now_iso(),
-        "task_id": task_id,
-        "level": level,
-        "message": message,
-        "details": details or {},
-    }
-    with _automation_lock:
-        _automation_logs.append(entry)
-        # Garder l'historique borné en mémoire
-        if len(_automation_logs) > 2000:
-            del _automation_logs[: len(_automation_logs) - 2000]
+    automation_logger.add_log(task_id, level, message, details)
 
 
 def _init_automation_tasks() -> None:
@@ -569,6 +559,10 @@ def _process_one_pdf(tmp_path: str, filename: str, fournisseur_ids: list[str]) -
             fournisseur_patterns=repo.fournisseur_patterns_map(),
         )
         data   = _serialize_record(data)
+        # Validation métier post-LLM
+        data, validation_warnings = validate_and_sanitize(data, doc_type)
+        if validation_warnings:
+            print(f"[VALIDATION] {filename}: " + " | ".join(validation_warnings))
         return {"data": data, "doc_type": doc_type, "error": None}
     except Exception as e:
         return {"data": None, "doc_type": None, "error": str(e)}
@@ -1092,11 +1086,7 @@ def automation_list_tasks():
 @app.get("/api/automation/logs", summary="Lister les logs d'automatisation")
 def automation_list_logs(task_id: str | None = None, limit: int = 200):
     lim = max(1, min(limit, 1000))
-    with _automation_lock:
-        logs = list(_automation_logs)
-    if task_id:
-        logs = [log for log in logs if log.get("task_id") == task_id]
-    return logs[-lim:]
+    return automation_logger.get_logs(task_id=task_id, limit=lim)
 
 
 @app.post("/api/automation/tasks/{task_id}/start", summary="Activer une tâche d'automatisation")

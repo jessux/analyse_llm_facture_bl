@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
 import {
@@ -36,7 +36,6 @@ const hasError = hasVerifError;
 
 export default function TableauFactures() {
   const searchParams = useSearchParams();
-  const router = useRouter();
   const [data, setData]                   = useState<Facture[]>([]);
   const [fournisseurs, setFournisseurs]   = useState<Fournisseur[]>([]);
   const [loading, setLoading]             = useState(true);
