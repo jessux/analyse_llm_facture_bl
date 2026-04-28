@@ -12,11 +12,8 @@ import shutil
 import time
 import json
 import os
-import re
 import zipfile
 import threading
-import uuid
-
 from main import (
     load_pdf_text,
     classify_document,
@@ -31,6 +28,9 @@ import db
 import repositories as repo
 from seeder import seed_if_empty
 from exporter import export_to_xlsm
+from routers import fournisseurs as fournisseurs_router
+from routers import automation as automation_router
+from routers import domino as domino_router
 from validators import validate_and_sanitize
 import automation_logger
 
@@ -64,9 +64,8 @@ _regen_lock = threading.Lock()
 _xlsm_write_lock = threading.Lock()
 _regen_pending = False
 _regen_running = False
-_domino_resync_jobs: dict[str, dict] = {}
-_domino_resync_jobs_lock = threading.Lock()
 _automation_tasks: dict[str, dict[str, Any]] = {}
+_automation_logs: list[dict[str, Any]] = []
 _automation_lock = threading.Lock()
 _automation_scheduler_started = False
 
@@ -391,6 +390,27 @@ def _start_automation_scheduler_once() -> None:
     t = threading.Thread(target=_automation_scheduler_loop, daemon=True, name="automation-scheduler")
     t.start()
 
+
+# ---------------------------------------------------------------------------
+# Initialisation et enregistrement des routers
+# ---------------------------------------------------------------------------
+
+automation_router.init_router(
+    tasks=_automation_tasks,
+    logs=_automation_logs,
+    lock=_automation_lock,
+    executor=_executor,
+    add_log_fn=_add_automation_log,
+    execute_task_fn=_execute_automation_task,
+)
+
+domino_router.init_router(
+    pick_tresorerie_fn=_pick_valid_tresorerie_path,
+    ensure_tresorerie_fn=_ensure_valid_tresorerie_path,
+    xlsm_lock=_xlsm_write_lock,
+    executor=_executor,
+)
+
 # ---------------------------------------------------------------------------
 # Persistance : SQLite via repositories.py
 # Les champs dérivés (TVA, TTC, vérifs, montant_total) ne sont pas persistés ;
@@ -533,6 +553,12 @@ def _serialize_record(record: dict) -> dict:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# Enregistrement des routers extraits
+app.include_router(fournisseurs_router.router)
+app.include_router(automation_router.router)
+app.include_router(domino_router.router)
 
 
 def _process_one_pdf(tmp_path: str, filename: str, fournisseur_ids: list[str]) -> dict:
@@ -884,70 +910,6 @@ def supprimer_rattachement(numero_facture: str, numero_bl: str):
     return {"message": f"Rattachement {numero_bl} ↔ {numero_facture} supprimé."}
 
 
-# ---------------------------------------------------------------------------
-# Endpoints fournisseurs
-# ---------------------------------------------------------------------------
-
-class FournisseurCreate(BaseModel):
-    id:          str   # identifiant interne unique, ex: "METRO"
-    nom_affiche: str   # nom affiché dans le xlsm, ex: "Metro"
-    patterns:    list[str] = []  # mots-clés pour la détection auto dans les PDFs
-
-class FournisseurUpdate(BaseModel):
-    nom_affiche: str | None = None
-    patterns:    list[str] | None = None
-
-
-@app.get("/api/fournisseurs", summary="Lister les fournisseurs")
-def get_fournisseurs():
-    return repo.list_fournisseurs()
-
-
-@app.post("/api/fournisseurs", summary="Ajouter un fournisseur", status_code=201)
-def create_fournisseur(body: FournisseurCreate):
-    key = body.id.upper().strip().replace(" ", "")
-    if repo.get_fournisseur(key) is not None:
-        raise HTTPException(status_code=409, detail=f"Le fournisseur '{key}' existe déjà.")
-    if not body.nom_affiche.strip():
-        raise HTTPException(status_code=422, detail="nom_affiche ne peut pas être vide.")
-    return repo.upsert_fournisseur(
-        id=key,
-        nom_affiche=body.nom_affiche.strip(),
-        patterns=body.patterns,
-    )
-
-
-@app.patch("/api/fournisseurs/{fournisseur_id}", summary="Modifier un fournisseur")
-def update_fournisseur(fournisseur_id: str, body: FournisseurUpdate):
-    key = fournisseur_id.upper().strip()
-    existing = repo.get_fournisseur(key)
-    if existing is None:
-        raise HTTPException(status_code=404, detail=f"Fournisseur '{key}' introuvable.")
-    if body.nom_affiche is not None and not body.nom_affiche.strip():
-        raise HTTPException(status_code=422, detail="nom_affiche ne peut pas être vide.")
-    updated = repo.update_fournisseur(
-        key,
-        nom_affiche=body.nom_affiche.strip() if body.nom_affiche is not None else None,
-        patterns=body.patterns if body.patterns is not None else None,
-    )
-    return updated or {}
-
-
-@app.delete("/api/fournisseurs/{fournisseur_id}", summary="Supprimer un fournisseur")
-def delete_fournisseur(fournisseur_id: str):
-    key = fournisseur_id.upper().strip()
-    if repo.get_fournisseur(key) is None:
-        raise HTTPException(status_code=404, detail=f"Fournisseur '{key}' introuvable.")
-    nb = repo.count_factures_for_fournisseur(key)
-    if nb > 0:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Impossible de supprimer '{key}' : {nb} facture(s) lui sont rattachées.",
-        )
-    repo.delete_fournisseur(key)
-    return {"message": f"Fournisseur '{key}' supprimé."}
-
-
 @app.get("/api/stats", summary="Statistiques globales")
 def get_stats():
     return repo.stats()
@@ -1069,242 +1031,6 @@ def reset_store():
         conn.execute("DELETE FROM bons_livraison")
         conn.execute("DELETE FROM factures")
     return {"message": "Factures et bons de livraison supprimés."}
-
-
-# ---------------------------------------------------------------------------
-# Automatisation — pilotage tâches + logs
-# ---------------------------------------------------------------------------
-
-@app.get("/api/automation/tasks", summary="Lister les tâches d'automatisation")
-def automation_list_tasks():
-    with _automation_lock:
-        tasks = [dict(v) for v in _automation_tasks.values()]
-    tasks.sort(key=lambda x: x.get("id", ""))
-    return tasks
-
-
-@app.get("/api/automation/logs", summary="Lister les logs d'automatisation")
-def automation_list_logs(task_id: str | None = None, limit: int = 200):
-    lim = max(1, min(limit, 1000))
-    return automation_logger.get_logs(task_id=task_id, limit=lim)
-
-
-@app.post("/api/automation/tasks/{task_id}/start", summary="Activer une tâche d'automatisation")
-def automation_start_task(task_id: str):
-    with _automation_lock:
-        task = _automation_tasks.get(task_id)
-        if not task:
-            raise HTTPException(status_code=404, detail=f"Tache '{task_id}' introuvable")
-        task["enabled"] = True
-        task["next_run"] = datetime.now().isoformat(timespec="seconds")
-    _add_automation_log(task_id, "info", "Tache activee.")
-    return {"message": f"Tache '{task_id}' activee."}
-
-
-@app.post("/api/automation/tasks/{task_id}/stop", summary="Désactiver une tâche d'automatisation")
-def automation_stop_task(task_id: str):
-    with _automation_lock:
-        task = _automation_tasks.get(task_id)
-        if not task:
-            raise HTTPException(status_code=404, detail=f"Tache '{task_id}' introuvable")
-        task["enabled"] = False
-    _add_automation_log(task_id, "warn", "Tache desactivee.")
-    return {"message": f"Tache '{task_id}' desactivee."}
-
-
-@app.post("/api/automation/tasks/{task_id}/run-now", summary="Exécuter une tâche immédiatement")
-def automation_run_task_now(task_id: str):
-    with _automation_lock:
-        task = _automation_tasks.get(task_id)
-        if not task:
-            raise HTTPException(status_code=404, detail=f"Tache '{task_id}' introuvable")
-        if task.get("is_running"):
-            raise HTTPException(status_code=409, detail=f"La tache '{task_id}' est deja en cours")
-    _executor.submit(_execute_automation_task, task_id, "manual")
-    return {"message": f"Execution immediate lancee pour '{task_id}'."}
-
-
-# ---------------------------------------------------------------------------
-# DOMINO — Automatisation import rapport journalier
-# ---------------------------------------------------------------------------
-
-@app.get("/api/domino/files", summary="Lister les fichiers DOMINO et leur statut d'import")
-def domino_list_files():
-    """Liste les fichiers .xlsx du dossier test_domino/ avec leur statut."""
-    return domino_module.list_domino_files()
-
-
-@app.get("/api/domino/data", summary="Données DOMINO importées")
-def domino_get_data():
-    """Retourne toutes les données DOMINO importées, triées par date décroissante."""
-    return domino_module.get_all_imported_data()
-
-
-@app.post("/api/domino/import-json", summary="Importer un JSON DOMINO (robuste)")
-async def domino_import_json(file: UploadFile = File(...), mode: str = "merge"):
-    """
-    Importe un JSON DOMINO avec validation/normalisation.
-    mode=merge (défaut) ou mode=replace.
-    """
-    try:
-        content = await file.read()
-        payload = json.loads(content.decode("utf-8"))
-        result = domino_module.import_json_payload(payload, mode=mode)
-        return result
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=422, detail=f"JSON invalide: {e}")
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur import JSON DOMINO : {e}")
-
-
-@app.post("/api/domino/import/{filename}", summary="Importer un fichier DOMINO")
-def domino_import_file(filename: str, overwrite: bool = False):
-    """
-    Parse et importe un fichier DOMINO depuis test_domino/.
-    Si overwrite=false (défaut) et que le fichier a déjà été importé, retourne skipped=true.
-    Tente d'écrire dans l'onglet DOMINO du XLSM si disponible.
-    """
-    active_xlsm = _pick_valid_tresorerie_path()
-
-    try:
-        with _xlsm_write_lock:
-            result = domino_module.import_domino_file(
-                filename=filename,
-                xlsm_path=active_xlsm,
-                overwrite=overwrite,
-            )
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur import DOMINO : {e}")
-
-    return result
-
-
-@app.post("/api/domino/import-all", summary="Importer tous les fichiers DOMINO non encore traités")
-def domino_import_all(overwrite: bool = False):
-    """
-    Importe en batch tous les fichiers DOMINO du dossier test_domino/.
-    Ignore par défaut les fichiers déjà importés.
-    """
-    files = domino_module.list_domino_files()
-    if not overwrite:
-        files = [f for f in files if not f["imported"]]
-
-    if not files:
-        return {"message": "Aucun fichier à importer.", "results": []}
-
-    active_xlsm = _pick_valid_tresorerie_path()
-    results = []
-    for f in files:
-        try:
-            with _xlsm_write_lock:
-                result = domino_module.import_domino_file(
-                    filename=f["filename"],
-                    xlsm_path=active_xlsm,
-                    overwrite=overwrite,
-                )
-            results.append(result)
-        except Exception as e:
-            results.append({
-                "filename": f["filename"],
-                "date": f.get("date"),
-                "skipped": False,
-                "xlsm_updated": False,
-                "cells_written": 0,
-                "message": f"Erreur : {e}",
-            })
-
-    imported = sum(1 for r in results if not r.get("skipped") and not r.get("xlsm_error") and "Erreur" not in r.get("message", ""))
-    return {
-        "message": f"{imported}/{len(results)} fichier(s) importé(s).",
-        "results": results,
-    }
-
-
-@app.post("/api/domino/resync-xlsm", summary="Forcer la resynchronisation DOMINO XLSM depuis le JSON")
-def domino_resync_xlsm_from_json(force_overwrite: bool = True):
-    """
-    Rejoue toutes les données DOMINO déjà présentes en JSON vers l'onglet DOMINO du XLSM.
-    Par défaut, écrase les valeurs existantes de la colonne date (force_overwrite=true).
-    """
-    active_xlsm = _ensure_valid_tresorerie_path()
-
-    try:
-        with _xlsm_write_lock:
-            result = domino_module.resync_xlsm_from_json(
-                xlsm_path=active_xlsm,
-                force_overwrite=force_overwrite,
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur resynchronisation DOMINO : {e}")
-
-    result["fichier"] = os.path.basename(active_xlsm)
-    return result
-
-
-def _run_domino_resync_job(job_id: str, force_overwrite: bool) -> None:
-    """Worker de fond pour la resynchronisation DOMINO JSON -> XLSM."""
-    with _domino_resync_jobs_lock:
-        _domino_resync_jobs[job_id] = {
-            "job_id": job_id,
-            "status": "running",
-            "message": "Resynchronisation en cours...",
-        }
-
-    try:
-        active_xlsm = _ensure_valid_tresorerie_path()
-        with _xlsm_write_lock:
-            result = domino_module.resync_xlsm_from_json(
-                xlsm_path=active_xlsm,
-                force_overwrite=force_overwrite,
-            )
-        result["fichier"] = os.path.basename(active_xlsm)
-        with _domino_resync_jobs_lock:
-            _domino_resync_jobs[job_id] = {
-                "job_id": job_id,
-                "status": "completed",
-                "message": result.get("message", "Resynchronisation terminee."),
-                "result": result,
-            }
-    except Exception as e:
-        with _domino_resync_jobs_lock:
-            _domino_resync_jobs[job_id] = {
-                "job_id": job_id,
-                "status": "failed",
-                "message": f"Echec de la resynchronisation: {e}",
-                "error": str(e),
-            }
-
-
-@app.post("/api/domino/resync-xlsm/start", summary="Démarrer une resynchronisation DOMINO en tâche de fond")
-def domino_resync_xlsm_start(force_overwrite: bool = True):
-    """
-    Lance la resynchronisation en arrière-plan et retourne immédiatement un job_id.
-    Évite les timeouts proxy sur les gros fichiers XLSM.
-    """
-    job_id = str(uuid.uuid4())
-    _executor.submit(_run_domino_resync_job, job_id, force_overwrite)
-    return {
-        "job_id": job_id,
-        "status": "running",
-        "message": "Resynchronisation DOMINO demarree.",
-    }
-
-
-@app.get("/api/domino/resync-xlsm/status/{job_id}", summary="Statut d'un job de resynchronisation DOMINO")
-def domino_resync_xlsm_status(job_id: str):
-    with _domino_resync_jobs_lock:
-        job = _domino_resync_jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' introuvable")
-    return job
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ router = APIRouter(prefix="/api/automation", tags=["Automatisation"])
 
 # Injectés depuis api.py via init_router()
 _tasks: dict[str, dict[str, Any]] = {}
+_logs: list[dict[str, Any]] = []
 _lock: threading.Lock | None = None
 _executor_ref: ThreadPoolExecutor | None = None
 _add_log: Callable | None = None
@@ -16,13 +17,15 @@ _execute_task: Callable | None = None
 
 def init_router(
     tasks: dict[str, dict[str, Any]],
+    logs: list[dict[str, Any]],
     lock: threading.Lock,
     executor: ThreadPoolExecutor,
     add_log_fn: Callable,
     execute_task_fn: Callable,
 ) -> None:
-    global _tasks, _lock, _executor_ref, _add_log, _execute_task
+    global _tasks, _logs, _lock, _executor_ref, _add_log, _execute_task
     _tasks = tasks
+    _logs = logs
     _lock = lock
     _executor_ref = executor
     _add_log = add_log_fn
@@ -39,10 +42,9 @@ def automation_list_tasks():
 
 @router.get("/logs", summary="Lister les logs d'automatisation")
 def automation_list_logs(task_id: str | None = None, limit: int = 200):
-    from api import _automation_logs
     lim = max(1, min(limit, 1000))
     with _lock:
-        logs = list(_automation_logs)
+        logs = list(_logs)
     if task_id:
         logs = [log for log in logs if log.get("task_id") == task_id]
     return logs[-lim:]

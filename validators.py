@@ -11,11 +11,11 @@ _DATE_MAX = date(2100, 12, 31)
 _MONTANT_MAX_SUSPECT = 500_000.0
 
 # Taux de TVA standards utilisés pour la cohérence TTC
-# Clés : suffixe du champ HT (ex: "1" pour prix_HT_1), valeur : taux décimal
+# Clés : nom exact du champ HT, valeur : taux décimal
 _TVA_RATES: dict[str, float] = {
-    "1": 0.20,
-    "2": 0.10,
-    "3": 0.055,
+    "prix_HT_5_5pct": 0.055,
+    "prix_HT_10pct":  0.10,
+    "prix_HT_20pct":  0.20,
 }
 
 
@@ -140,18 +140,16 @@ def _validate_coherence_ttc(data: dict, warnings: list[str]) -> None:
     """
     Règle 5 — Cohérence TTC.
 
-    Si les 3 bases HT (prix_HT_1, prix_HT_2, prix_HT_3) sont toutes présentes,
-    on calcule le TTC attendu et on le compare à montant_ttc (si fourni).
-    Tolérance : 1 €.
+    Si les 3 bases HT sont toutes présentes, on calcule le TTC attendu
+    et on le compare à montant_ttc (si fourni). Tolérance : 1 €.
     """
     ht_vals: dict[str, float] = {}
-    for suffix, rate in _TVA_RATES.items():
-        key = f"prix_HT_{suffix}"
-        val = data.get(key)
+    for field, rate in _TVA_RATES.items():
+        val = data.get(field)
         if val is None:
             return  # Pas toutes les bases présentes → on ne vérifie pas
         try:
-            ht_vals[suffix] = float(val)
+            ht_vals[field] = float(val)
         except (TypeError, ValueError):
             return
 
@@ -165,7 +163,7 @@ def _validate_coherence_ttc(data: dict, warnings: list[str]) -> None:
         return
 
     ttc_calcule = sum(
-        ht_vals[suffix] * (1 + rate) for suffix, rate in _TVA_RATES.items()
+        ht_vals[field] * (1 + rate) for field, rate in _TVA_RATES.items()
     )
 
     if abs(ttc_extrait_f - ttc_calcule) > 1.0:
