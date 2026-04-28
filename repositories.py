@@ -294,6 +294,62 @@ def list_factures() -> list[dict]:
     return factures
 
 
+def count_factures(search: str = "") -> int:
+    """Compte le nombre total de factures, avec filtre optionnel sur numero ou fournisseur_id."""
+    conn = get_conn()
+    if search:
+        pattern = f"%{search}%"
+        row = conn.execute(
+            "SELECT COUNT(*) FROM factures WHERE numero LIKE ? OR fournisseur_id LIKE ?",
+            (pattern, pattern),
+        ).fetchone()
+    else:
+        row = conn.execute("SELECT COUNT(*) FROM factures").fetchone()
+    return row[0] if row else 0
+
+
+def list_factures_paginated(page: int, limit: int, search: str = "") -> list[dict]:
+    """Retourne les factures paginées avec filtre optionnel, et leurs BL liés.
+
+    Si limit=0, retourne tous les résultats (rétrocompatibilité).
+    """
+    conn = get_conn()
+    if search:
+        pattern = f"%{search}%"
+        base_query = (
+            "SELECT * FROM factures "
+            "WHERE numero LIKE ? OR fournisseur_id LIKE ? "
+            "ORDER BY date_emission, numero"
+        )
+        params_all: tuple = (pattern, pattern)
+    else:
+        base_query = "SELECT * FROM factures ORDER BY date_emission, numero"
+        params_all = ()
+
+    if limit == 0:
+        rows = conn.execute(base_query, params_all).fetchall()
+    else:
+        offset = (page - 1) * limit
+        rows = conn.execute(
+            base_query + " LIMIT ? OFFSET ?",
+            (*params_all, limit, offset),
+        ).fetchall()
+
+    factures = [facture_row_to_api(r) for r in rows]
+
+    # Lookup BL rattachés
+    bl_rows = conn.execute(
+        "SELECT numero_facture_rattachee AS f, numero AS b "
+        "FROM bons_livraison WHERE numero_facture_rattachee IS NOT NULL"
+    ).fetchall()
+    bl_by_facture: dict[str, list[str]] = {}
+    for r in bl_rows:
+        bl_by_facture.setdefault(r["f"], []).append(r["b"])
+    for f in factures:
+        f["bons_livraisons"] = bl_by_facture.get(f["numero_facture"], [])
+    return factures
+
+
 def get_facture(numero: str) -> dict | None:
     row = get_conn().execute(
         "SELECT * FROM factures WHERE numero=?", (numero,)
@@ -488,6 +544,50 @@ def list_bons() -> list[dict]:
         "SELECT * FROM bons_livraison ORDER BY date_livraison, numero"
     )
     return [bon_row_to_api(r) for r in cur.fetchall()]
+
+
+def count_bons(search: str = "") -> int:
+    """Compte le nombre total de bons de livraison, avec filtre optionnel sur numero ou fournisseur_id."""
+    conn = get_conn()
+    if search:
+        pattern = f"%{search}%"
+        row = conn.execute(
+            "SELECT COUNT(*) FROM bons_livraison WHERE numero LIKE ? OR fournisseur_id LIKE ?",
+            (pattern, pattern),
+        ).fetchone()
+    else:
+        row = conn.execute("SELECT COUNT(*) FROM bons_livraison").fetchone()
+    return row[0] if row else 0
+
+
+def list_bons_paginated(page: int, limit: int, search: str = "") -> list[dict]:
+    """Retourne les bons de livraison paginés avec filtre optionnel.
+
+    Si limit=0, retourne tous les résultats (rétrocompatibilité).
+    """
+    conn = get_conn()
+    if search:
+        pattern = f"%{search}%"
+        base_query = (
+            "SELECT * FROM bons_livraison "
+            "WHERE numero LIKE ? OR fournisseur_id LIKE ? "
+            "ORDER BY date_livraison, numero"
+        )
+        params_all: tuple = (pattern, pattern)
+    else:
+        base_query = "SELECT * FROM bons_livraison ORDER BY date_livraison, numero"
+        params_all = ()
+
+    if limit == 0:
+        rows = conn.execute(base_query, params_all).fetchall()
+    else:
+        offset = (page - 1) * limit
+        rows = conn.execute(
+            base_query + " LIMIT ? OFFSET ?",
+            (*params_all, limit, offset),
+        ).fetchall()
+
+    return [bon_row_to_api(r) for r in rows]
 
 
 def get_bon(numero: str) -> dict | None:

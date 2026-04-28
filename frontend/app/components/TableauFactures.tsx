@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supplierBadge } from "./Badge";
 import { DownloadIcon, SpinnerIcon } from "./Icons";
@@ -15,25 +15,12 @@ import {
 import ModalRattachement from "./ModalRattachement";
 import ModalPDF from "./ModalPDF";
 import EditableCell from "./EditableCell";
+import Pagination from "./Pagination";
+import { formatDate, formatMontant, verifBadge, hasVerifError } from "./tableHelpers";
 
 // ---------------------------------------------------------------------------
-// Helpers de rendu
+// Helpers locaux
 // ---------------------------------------------------------------------------
-
-function formatDate(d: string | null) {
-  if (!d) return <span className="text-neutral-400">—</span>;
-  return new Date(d).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
-}
-
-function formatMontant(v: number | null | undefined, className?: string) {
-  if (v === null || v === undefined)
-    return <span className="text-neutral-400">—</span>;
-  return (
-    <span className={`font-mono tabular-nums ${className ?? ""}`}>
-      {v.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-    </span>
-  );
-}
 
 function isInvalidDate(dateStr: string | null): boolean {
   if (!dateStr) return false;
@@ -41,28 +28,7 @@ function isInvalidDate(dateStr: string | null): boolean {
   return Number.isNaN(d.getTime());
 }
 
-/** Badge OK / Erreur pour les vérifications TVA */
-function verifBadge(verif: string, amount: number | null) {
-  if (!verif || amount === null || amount === undefined)
-    return <span className="text-neutral-400 font-mono tabular-nums">—</span>;
-  const colorAmt = verif === "OK"
-    ? "text-emerald-700 dark:text-emerald-400"
-    : "text-red-600 dark:text-red-400";
-  const icon = verif === "OK"
-    ? <span className="ml-1 text-emerald-600 dark:text-emerald-400 text-xs">✓</span>
-    : <span className="ml-1 text-red-600 dark:text-red-400 text-xs font-bold" title="Vérification TVA incorrecte">⚠</span>;
-  return (
-    <span className={`font-mono tabular-nums ${colorAmt}`}>
-      {amount.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-      {icon}
-    </span>
-  );
-}
-
-/** Retourne true si la ligne a au moins une erreur de vérification TVA */
-function hasError(f: Facture | { verif_tva_5_5: string; verif_tva_10: string; verif_tva_20: string }) {
-  return f.verif_tva_5_5 === "Erreur" || f.verif_tva_10 === "Erreur" || f.verif_tva_20 === "Erreur";
-}
+const hasError = hasVerifError;
 
 // ---------------------------------------------------------------------------
 // Composant principal
@@ -76,38 +42,62 @@ export default function TableauFactures() {
   const [loading, setLoading]             = useState(true);
   const [error, setError]                 = useState<string | null>(null);
   const [search, setSearch]               = useState(() => searchParams.get("facture") ?? searchParams.get("fournisseur") ?? "");
+  const [searchInput, setSearchInput]     = useState(() => searchParams.get("facture") ?? searchParams.get("fournisseur") ?? "");
+  const [page, setPage]                   = useState(1);
+  const [limit, setLimit]                 = useState(50);
+  const [total, setTotal]                 = useState(0);
+  const [pages, setPages]                 = useState(1);
   const [modalFacture, setModalFacture]   = useState<Facture | null>(null);
   const [pdfViewer, setPdfViewer]         = useState<{ url: string; titre: string } | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [exportError, setExportError]     = useState<string | null>(null);
+  const searchDebounceRef                 = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (p = page, l = limit, s = search) => {
     setLoading(true);
     setError(null);
     try {
-      const [factures, fournisseursApi] = await Promise.all([
-        fetchFactures(),
+      const [result, fournisseursApi] = await Promise.all([
+        fetchFactures(p, l, s),
         fetchFournisseurs(),
       ]);
-      setData(factures);
+      setData(result.items);
+      setTotal(result.total);
+      setPages(result.pages);
+      setPage(result.page);
       setFournisseurs(fournisseursApi);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur de chargement.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page, limit, search]);
 
   useEffect(() => { load(); }, [load]);
 
-  const filtered = data.filter((f) => {
-    const q = search.toLowerCase();
-    return (
-      f.numero_facture?.toLowerCase().includes(q) ||
-      f.nom_fournisseur?.toLowerCase().includes(q) ||
-      f.fichier_source?.toLowerCase().includes(q)
-    );
-  });
+  // Debounce de la recherche : on attend 350ms après la dernière frappe
+  const handleSearchChange = (value: string) => {
+    setSearchInput(value);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      setSearch(value);
+      setPage(1);
+      load(1, limit, value);
+    }, 350);
+  };
+
+  const handlePageChange = (p: number) => {
+    setPage(p);
+    load(p, limit, search);
+  };
+
+  const handleLimitChange = (l: number) => {
+    setLimit(l);
+    setPage(1);
+    load(1, l, search);
+  };
+
+  const filtered = data;
 
   return (
     <div className="flex flex-col gap-4">
@@ -116,13 +106,13 @@ export default function TableauFactures() {
         <input
           type="text"
           placeholder="Rechercher une facture…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          value={searchInput}
+          onChange={(e) => handleSearchChange(e.target.value)}
           className="w-full max-w-xs rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-sm text-neutral-800 dark:text-neutral-200 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900 dark:focus:ring-white transition"
         />
         <div className="flex items-center gap-2">
           <button
-            onClick={load}
+            onClick={() => load(page, limit, search)}
             className="px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 text-sm text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
             title="Rafraîchir"
           >↻</button>
@@ -397,13 +387,23 @@ export default function TableauFactures() {
       )}
 
       {!loading && !error && (
-        <p className="text-xs text-neutral-400 dark:text-neutral-600">
-          {filtered.length} résultat{filtered.length > 1 ? "s" : ""}
-          {search && ` pour « ${search} »`}
+        <div className="flex flex-col gap-2">
+          {/* Infos erreurs TVA */}
           {filtered.some(hasError) && (
-            <span className="ml-2 text-red-500">· {filtered.filter(hasError).length} facture(s) avec erreur TVA</span>
+            <p className="text-xs text-red-500">
+              ⚠ {filtered.filter(hasError).length} facture(s) avec erreur TVA sur cette page
+            </p>
           )}
-        </p>
+          {/* Pagination */}
+          <Pagination
+            page={page}
+            pages={pages}
+            total={total}
+            limit={limit}
+            onPageChange={handlePageChange}
+            onLimitChange={handleLimitChange}
+          />
+        </div>
       )}
 
       {modalFacture && modalFacture.numero_facture && (
@@ -412,7 +412,7 @@ export default function TableauFactures() {
           numeroSource={modalFacture.numero_facture}
           blRattaches={modalFacture.bons_livraisons ?? []}
           onClose={() => setModalFacture(null)}
-          onSuccess={load}
+          onSuccess={() => load(page, limit, search)}
         />
       )}
 

@@ -110,12 +110,38 @@ export async function uploadDocuments(files: File[]): Promise<UploadResult> {
   });
 }
 
-export async function fetchFactures(): Promise<Facture[]> {
-  return apiFetch<Facture[]>("/api/factures");
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
 }
 
-export async function fetchBonsLivraison(): Promise<BonLivraison[]> {
-  return apiFetch<BonLivraison[]>("/api/bons-livraison");
+export async function fetchFactures(
+  page = 1,
+  limit = 50,
+  search = ""
+): Promise<PaginatedResponse<Facture>> {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+    ...(search ? { search } : {}),
+  });
+  return apiFetch<PaginatedResponse<Facture>>(`/api/factures?${params}`);
+}
+
+export async function fetchBonsLivraison(
+  page = 1,
+  limit = 50,
+  search = ""
+): Promise<PaginatedResponse<BonLivraison>> {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+    ...(search ? { search } : {}),
+  });
+  return apiFetch<PaginatedResponse<BonLivraison>>(`/api/bons-livraison?${params}`);
 }
 
 export async function fetchStats(): Promise<Stats> {

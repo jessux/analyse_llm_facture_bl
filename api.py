@@ -33,7 +33,7 @@ from seeder import seed_if_empty
 from exporter import export_to_xlsm
 
 # Dossier de stockage persistant des PDFs importés
-STORAGE_DIR = "storage"
+STORAGE_DIR = os.getenv("MARJO_STORAGE_DIR", "storage")
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
 app = FastAPI(
@@ -42,9 +42,12 @@ app = FastAPI(
     version="1.0.0",
 )
 
+_cors_origins_raw = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -699,13 +702,25 @@ async def upload_documents(files: list[UploadFile] = File(...)):
 
 
 @app.get("/api/factures", summary="Lister les factures extraites")
-def get_factures():
-    return [_serialize_record(_enriched_facture(f) or {}) for f in repo.list_factures()]
+def get_factures(page: int = 1, limit: int = 50, search: str = ""):
+    total = repo.count_factures(search)
+    items = [
+        _serialize_record(_enriched_facture(f) or {})
+        for f in repo.list_factures_paginated(page, limit, search)
+    ]
+    pages = (total + limit - 1) // limit if limit > 0 else 1
+    return {"items": items, "total": total, "page": page, "limit": limit, "pages": pages}
 
 
 @app.get("/api/bons-livraison", summary="Lister les bons de livraison extraits")
-def get_bons_livraison():
-    return [_serialize_record(_enriched_bon(b) or {}) for b in repo.list_bons()]
+def get_bons_livraison(page: int = 1, limit: int = 50, search: str = ""):
+    total = repo.count_bons(search)
+    items = [
+        _serialize_record(_enriched_bon(b) or {})
+        for b in repo.list_bons_paginated(page, limit, search)
+    ]
+    pages = (total + limit - 1) // limit if limit > 0 else 1
+    return {"items": items, "total": total, "page": page, "limit": limit, "pages": pages}
 
 
 class RattachementBL(BaseModel):
