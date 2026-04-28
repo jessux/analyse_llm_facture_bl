@@ -26,6 +26,8 @@ from typing import Optional, Any
 
 import openpyxl
 from xlsm_safe import atomic_save_workbook
+import db
+import repositories as repo
 
 DOMINO_FOLDER = "test_domino"
 DOMINO_IMPORTS_FILE = "output/domino_imports.json"
@@ -268,36 +270,122 @@ def parse_domino_file(filepath: str) -> DominoJourData:
 # ---------------------------------------------------------------------------
 
 def list_domino_files() -> list[dict]:
-    """Liste les fichiers .xlsx dans DOMINO_FOLDER avec leur statut d'import."""
-    imports = _load_imports()
+    """Liste les fichiers .xlsx dans DOMINO_FOLDER avec leur statut d'import depuis la BDD."""
+    # Migration one-time depuis JSON si BDD vide
+    _migrate_from_json_if_needed()
+    
+    # Charger les dates importées depuis la BDD
+    imported_dates = {row.get("date"): row for row in repo.list_domino_jours()}
+    
     result = []
     if not os.path.exists(DOMINO_FOLDER):
         return result
     for fname in sorted(os.listdir(DOMINO_FOLDER), reverse=True):
         if not fname.lower().endswith(".xlsx"):
             continue
-        key = os.path.splitext(fname)[0]
         d = _parse_date_from_filename(fname)
+        date_iso = d.isoformat() if d else None
+        is_imported = date_iso and date_iso in imported_dates
+        imported_at = None
+        if is_imported:
+            imported_at = imported_dates[date_iso].get("imported_at")
+        
         result.append({
             "filename": fname,
-            "date": d.isoformat() if d else None,
-            "imported": key in imports,
-            "imported_at": imports[key].get("imported_at") if key in imports else None,
+            "date": date_iso,
+            "imported": is_imported,
+            "imported_at": imported_at,
         })
     return result
 
 
 def get_all_imported_data() -> list[dict]:
-    """Retourne toutes les données importées triées par date décroissante."""
-    imports = _load_imports()
-    items = list(imports.values())
+    """Retourne toutes les données importées depuis la BDD, triées par date décroissante."""
+    # Migration one-time depuis JSON si BDD vide
+    _migrate_from_json_if_needed()
+    
+    domino_rows = repo.list_domino_jours()
+    # Récupérer les jours depuis la BDD
+    items = []
+    for row in domino_rows:
+        items.append({
+            "imported_at": row.get("imported_at"),
+            "filename": row.get("filename"),
+            "data": _row_to_dict(row),
+        })
     items.sort(key=lambda x: x.get("data", {}).get("date", ""), reverse=True)
     return items
 
 
 def has_imported_data() -> bool:
-    """Indique si le JSON d'import DOMINO contient au moins une entrée."""
-    return bool(_load_imports())
+    """Indique si la BDD DOMINO contient au moins une entrée."""
+    _migrate_from_json_if_needed()
+    return len(repo.list_domino_jours()) > 0
+
+
+# ---------------------------------------------------------------------------
+# Helpers pour migration JSON → SQLite
+# ---------------------------------------------------------------------------
+
+def _row_to_dict(row: dict) -> dict:
+    """Convertit une ligne de la BDD domino_jours en dict compatible JSON domino."""
+    return {
+        "date": row.get("date"),
+        "filename": row.get("filename"),
+        "ca_ttc_matin": row.get("ca_ttc_matin"),
+        "ca_ttc_midi": row.get("ca_ttc_midi"),
+        "ca_ttc_apm": row.get("ca_ttc_apm"),
+        "ca_ttc_soir": row.get("ca_ttc_soir"),
+        "ca_ttc_uber": row.get("ca_ttc_uber"),
+        "ca_ttc_deliveroo": row.get("ca_ttc_deliveroo"),
+        "ca_ttc_total": row.get("ca_ttc_total"),
+        "tva_total": row.get("tva_total"),
+        "tva_55": row.get("tva_55"),
+        "tva_10": row.get("tva_10"),
+        "especes": row.get("especes"),
+        "carte_bancaire": row.get("carte_bancaire"),
+        "cb_link": row.get("cb_link"),
+        "belorder": row.get("belorder"),
+        "uber_eats": row.get("uber_eats"),
+        "deliveroo_paiement": row.get("deliveroo_paiement"),
+        "total_encaissements": row.get("total_encaissements"),
+        "nb_clients_matin": row.get("nb_clients_matin"),
+        "nb_clients_midi": row.get("nb_clients_midi"),
+        "nb_clients_soir": row.get("nb_clients_soir"),
+        "total_clients": row.get("total_clients"),
+    }
+
+
+def _migrate_from_json_if_needed() -> None:
+    """
+    Effectue une migration ONE-TIME du JSON domino_imports.json vers la BDD.
+    N'agit que si la BDD est vide et le JSON existe.
+    """
+    # Vérifier si la BDD est vide
+    if len(repo.list_domino_jours()) > 0:
+        return  # Déjà peuplée
+    
+    # Vérifier si le JSON existe
+    if not os.path.exists(DOMINO_IMPORTS_FILE):
+        return
+    
+    # Charger et migrer depuis le JSON
+    try:
+        with open(DOMINO_IMPORTS_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        imports = _normalize_imports_payload(raw)
+        
+        for key, item in imports.items():
+            data_dict = item.get("data")
+            if not data_dict:
+                continue
+            try:
+                domino_data = _data_from_import_dict(data_dict)
+                repo.upsert_domino_jour(domino_data)
+            except Exception as e:
+                print(f"[WARN] Migration DOMINO {key}: {e}")
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[WARN] Impossible de lire {DOMINO_IMPORTS_FILE} pour migration: {e}")
 
 
 def _load_imports() -> dict:
@@ -389,47 +477,53 @@ def _normalize_imports_payload(raw: Any) -> dict:
 
 
 def _save_import(key: str, data: DominoJourData) -> None:
-    os.makedirs(os.path.dirname(DOMINO_IMPORTS_FILE) or ".", exist_ok=True)
-    imports = _load_imports()
-    imports[key] = {
-        "imported_at": datetime.now().isoformat(),
-        "filename": data.filename,
-        "data": data.to_dict(),
-    }
-    _atomic_write_json(DOMINO_IMPORTS_FILE, imports)
+    """Sauvegarde l'import DOMINO dans la BDD SQLite (le JSON n'est plus utilisé)."""
+    repo.upsert_domino_jour(data)
 
 
 def import_json_payload(raw: Any, mode: str = "merge") -> dict:
     """
     Importe un payload JSON DOMINO de manière robuste.
+    Stocke dans la BDD SQLite (le mode n'affecte que la sémantique de présentation).
 
     mode:
       - merge (défaut): fusionne avec l'existant
-      - replace: remplace totalement le JSON existant
+      - replace: remplace totalement (sémantiquement; BDD atomique)
     """
+    if not isinstance(raw, (list, dict)):
+        raise ValueError("Payload invalide: doit être list ou dict")
+    
     normalized = _normalize_imports_payload(raw)
     if mode not in {"merge", "replace"}:
         raise ValueError("mode invalide (attendu: merge|replace)")
 
-    if mode == "replace":
-        final_payload = normalized
-    else:
-        existing = _load_imports()
-        final_payload = dict(existing)
-        final_payload.update(normalized)
+    imported = 0
+    for key, item in normalized.items():
+        data_dict = item.get("data")
+        if not data_dict:
+            continue
+        try:
+            domino_data = _data_from_import_dict(data_dict)
+            repo.upsert_domino_jour(domino_data)
+            imported += 1
+        except Exception as e:
+            print(f"[WARN] Import JSON DOMINO {key}: {e}")
 
-    _atomic_write_json(DOMINO_IMPORTS_FILE, final_payload)
+    total = len(repo.list_domino_jours())
     return {
         "message": "Import JSON DOMINO termine.",
         "mode": mode,
-        "imported": len(normalized),
-        "total": len(final_payload),
+        "imported": imported,
+        "total": total,
     }
 
 
 def is_imported(filename: str) -> bool:
-    key = os.path.splitext(os.path.basename(filename))[0]
-    return key in _load_imports()
+    """Vérifie si une date DOMINO a déjà été importée via la BDD."""
+    d = _parse_date_from_filename(filename)
+    if d is None:
+        return False
+    return repo.has_domino_jour(d)
 
 
 # ---------------------------------------------------------------------------
@@ -586,22 +680,23 @@ def _data_from_import_dict(d: dict) -> DominoJourData:
 
 def resync_xlsm_from_json(xlsm_path: str, force_overwrite: bool = True) -> dict:
     """
-    Réécrit l'onglet DOMINO dans le XLSM à partir du JSON d'import.
+    Réécrit l'onglet DOMINO dans le XLSM à partir de la BDD SQLite.
+    Remplace l'ancienne implémentation qui lisait depuis JSON.
 
     Par défaut, force l'écrasement des colonnes dates existantes.
     """
-    imports = _load_imports()
-    if not imports:
+    domino_rows = repo.list_domino_jours()
+    if not domino_rows:
         return {
-            "message": "Aucune donnée JSON DOMINO à resynchroniser.",
+            "message": "Aucune donnée DOMINO en BDD à resynchroniser.",
             "total": 0,
             "written": 0,
             "skipped": 0,
             "errors": [],
         }
 
-    items = list(imports.values())
-    items.sort(key=lambda x: x.get("data", {}).get("date", ""))
+    # Trier par date
+    domino_rows_sorted = sorted(domino_rows, key=lambda x: x.get("date", ""))
 
     written = 0
     skipped = 0
@@ -613,8 +708,8 @@ def resync_xlsm_from_json(xlsm_path: str, force_overwrite: bool = True) -> dict:
             raise ValueError("Onglet 'DOMINO' introuvable dans le fichier XLSM.")
         ws = wb["DOMINO"]
 
-        for item in items:
-            data_dict = item.get("data") or {}
+        for row in domino_rows_sorted:
+            data_dict = _row_to_dict(row)
             try:
                 data_obj = _data_from_import_dict(data_dict)
                 result = _write_data_on_open_sheet(ws, data_obj, overwrite=force_overwrite)
@@ -626,7 +721,7 @@ def resync_xlsm_from_json(xlsm_path: str, force_overwrite: bool = True) -> dict:
                 errors.append(
                     {
                         "date": data_dict.get("date"),
-                        "filename": data_dict.get("filename") or item.get("filename"),
+                        "filename": data_dict.get("filename"),
                         "error": str(e),
                     }
                 )
@@ -638,7 +733,7 @@ def resync_xlsm_from_json(xlsm_path: str, force_overwrite: bool = True) -> dict:
 
     return {
         "message": f"Resynchronisation DOMINO terminee: {written} ecritures, {skipped} ignores, {len(errors)} erreur(s).",
-        "total": len(items),
+        "total": len(domino_rows),
         "written": written,
         "skipped": skipped,
         "errors": errors,
