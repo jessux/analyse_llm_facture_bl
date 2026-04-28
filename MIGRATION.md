@@ -117,9 +117,17 @@ schema_meta (
   - Conservation de la régénération XLSM via le nouvel exporter
 - [x] **Étape 5** — Refactor `domino.py` : passage de `output/domino_imports.json` à SQLite (avec migration auto + fallback lecture JSON pour la 1ʳᵉ exécution)
 - [x] **Étape 6** — Exporter : copie `template.xlsm` → injection des onglets `Achats Cons`, `DOMINO`, `Autres achats`, `Inputs` → sauvegarde atomique
-- [ ] **Étape 6** — Exporter : copie `template.xlsm` → injection des onglets `Achats Cons`, `DOMINO`, `Autres achats`, `Inputs` → sauvegarde atomique
-- [ ] **Étape 7** — (Optionnel) endpoints CRUD + UI pour `Autres achats`
-- [ ] **Étape 8** — Tests d'intégration + nettoyage des chemins morts
+- [x] **Étape 7** — endpoints CRUD + UI pour `Autres achats`
+    - 5 endpoints ajoutés : GET/POST /autres_achats, GET/PATCH/DELETE /autres_achats/{achat_id}
+    - 2 Pydantic models : AutreAchatCreate, AutreAchatUpdate
+    - 41 endpoints totaux maintenant (36 → 41)
+- [x] **Étape 8** — Adaptation test suite + nettoyage de _store
+    - test_startup_xlsm.py : réécrit pour utiliser db.reset_connection() + repositories
+    - test_aggregation.py : refactorisé pour repos.list/get_facture/bon()
+    - test_stats_debug.py : refactorisé pour repo functions
+    - Ajout de main guards pour éviter exécution à l'import
+    - Suppression de tous les références _store des tests
+    - Syntaxe validée avec py_compile
 
 ## Risques identifiés
 - L'onglet `Achats Cons` mélange lignes facture pure + lignes BL : la déduplication doit rester correcte → on garde la même logique métier `link_documents` + `write_to_achats_cons`, on change juste la source des données.
