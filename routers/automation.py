@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -9,10 +9,10 @@ router = APIRouter(prefix="/api/automation", tags=["Automatisation"])
 # Injectés depuis api.py via init_router()
 _tasks: dict[str, dict[str, Any]] = {}
 _logs: list[dict[str, Any]] = []
-_lock: threading.Lock | None = None
-_executor_ref: ThreadPoolExecutor | None = None
-_add_log: Callable | None = None
-_execute_task: Callable | None = None
+_lock: Optional[threading.Lock] = None
+_executor_ref: Optional[ThreadPoolExecutor] = None
+_add_log: Optional[Callable] = None
+_execute_task: Optional[Callable] = None
 
 
 def init_router(
@@ -41,7 +41,7 @@ def automation_list_tasks():
 
 
 @router.get("/logs", summary="Lister les logs d'automatisation")
-def automation_list_logs(task_id: str | None = None, limit: int = 200):
+def automation_list_logs(task_id: Optional[str] = None, limit: int = 200):
     lim = max(1, min(limit, 1000))
     with _lock:
         logs = list(_logs)
