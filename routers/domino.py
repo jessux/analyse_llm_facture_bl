@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable
+from typing import Callable, Optional
 import threading
 import json
 import os
@@ -10,10 +10,10 @@ import domino as domino_module
 router = APIRouter(prefix="/api/domino", tags=["DOMINO"])
 
 # Injectés depuis api.py via init_router()
-_pick_tresorerie: Callable | None = None
-_ensure_tresorerie: Callable | None = None
-_xlsm_lock: threading.Lock | None = None
-_executor_ref: ThreadPoolExecutor | None = None
+_pick_tresorerie: Optional[Callable] = None
+_ensure_tresorerie: Optional[Callable] = None
+_xlsm_lock: Optional[threading.Lock] = None
+_executor_ref: Optional[ThreadPoolExecutor] = None
 
 # Jobs de resynchronisation en arrière-plan (état local au router)
 _domino_resync_jobs: dict[str, dict] = {}

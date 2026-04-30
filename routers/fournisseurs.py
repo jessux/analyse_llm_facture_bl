@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from typing import Optional, List
 import repositories as repo
 
 router = APIRouter(prefix="/api/fournisseurs", tags=["Fournisseurs"])
@@ -12,8 +13,8 @@ class FournisseurCreate(BaseModel):
 
 
 class FournisseurUpdate(BaseModel):
-    nom_affiche: str | None = None
-    patterns:    list[str] | None = None
+    nom_affiche: Optional[str] = None
+    patterns:    Optional[List[str]] = None
 
 
 @router.get("", summary="Lister les fournisseurs")
